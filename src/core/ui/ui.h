@@ -353,6 +353,15 @@ public:
     // spec 05 §1.5 state 5: "shutting down" popup from the power-button
     // press until its release (the board powers off after a 1.5 s hold).
     bool powerPopupOpen() const { return powerOpen_; }
+    // Power-off hold (spec 05 §1.5 state 5): the board powers off after
+    // 1500 ms (0x14984); the "Shutting down" popup shows the elapsed part of
+    // the hold as a progress bar, 0..100 % (0x149c0), redrawn every >= 30 ms.
+    static constexpr uint32_t kPowerHoldMs = 1500;
+    static constexpr uint32_t kPowerRedrawMs = 30;
+    static int powerPercent(uint32_t elapsedMs) {
+        return elapsedMs >= kPowerHoldMs ? 100 : int(elapsedMs * 100u / kPowerHoldMs);
+    }
+    int powerPopupPercent() const { return powerOpen_ ? powerPercent(now_ - powerAt_) : 0; }
     // `/.develop` existed on the card at boot (spec 06 §7.2).
     bool developMode() const { return develop_; }
     // Factory test (interface event 11, spec 05 §2.12).
@@ -467,6 +476,8 @@ private:
     uint32_t gapMaxMs_ = 0, dirtyLatMaxUs_ = 0, inputLatMaxMs_ = 0;
 
     bool powerOpen_ = false;
+    uint32_t powerAt_ = 0;       // power press time
+    uint32_t powerDrawn_ = 0;    // last popup redraw
     bool develop_ = false;
 
     char note_[64] = {};

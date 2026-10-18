@@ -774,6 +774,7 @@ void Ui::dispatchButton(uint8_t id, uint8_t state) {
             // spec 05 §1.5 state 5: popup at the press; the board powers off
             // after the 1.5 s hold, a release before that cancels it.
             powerOpen_ = true;
+            powerAt_ = powerDrawn_ = now_;
             dirty();
         } else if (state == kRelease && powerOpen_) {
             powerOpen_ = false;
@@ -885,6 +886,11 @@ void Ui::update(uint32_t now) {
                 if (s && (!btn::isModuleKey(id) || s->ownsModuleKey(id))) s->onButton(id, kHold);
             }
         }
+    }
+    // Shutdown popup progress (spec 05 §1.5: refresh every >= 30 ms).
+    if (powerOpen_ && now - powerDrawn_ >= kPowerRedrawMs && now - powerAt_ <= kPowerHoldMs + kPowerRedrawMs) {
+        powerDrawn_ = now;
+        dirty();
     }
     if (factory.active()) factory.update(now);
     else if (Screen* s = current()) s->update(now);   // suspended during the factory test
@@ -1069,7 +1075,9 @@ void Ui::render() {
     usb.draw(g, t);   // full screen over the module and its popups
     if (askOpen_ && !usb.active()) wg::messagePopup(g, t, askTitle_, askText_, 150, 150);
     if (progressOpen_) wg::progressPopup(g, t, progTitle_, progPct_);
-    if (powerOpen_) wg::messagePopup(g, t, "Shutting down...", nullptr);
+    // "Shutting down" (stock string, STRINGS_DIFF) with the hold progress;
+    // the stock progress-popup style (spec 20 §3.7) [I: no stock shot].
+    if (powerOpen_) wg::progressPopup(g, t, "Shutting down", powerPopupPercent());
     if (note_[0]) {
         wg::popupBox(g, t, wg::kProgressX - 40, 360, wg::kProgressW + 80, 44);
         g.text(400, 382, kFont3, t.slot(slot::kProgress + 2), note_, IDisplay::kOptCenter);

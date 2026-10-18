@@ -464,8 +464,8 @@ void list(Gfx& g, const Theme& th, const ListView& v) {
             int n = 0, pen = 0;
             while (buf[n] && pen < room) pen += textWidth(v.font, buf + n++, 1);
             buf[n] = 0;
-            g.text(v.x + 13, v.y + 17 + kListRowH * r, v.font, th.slot(s + (marked ? 5 : 4)), buf,
-                   IDisplay::kOptCenterY);
+            const uint32_t tc = v.enabled ? th.slot(s + (marked ? 5 : 4)) : th.slot(slot::kBottomLabelOff);
+            g.text(v.x + 13, v.y + 17 + kListRowH * r, v.font, tc, buf, IDisplay::kOptCenterY);
         }
         g.noClip();
     }
@@ -474,11 +474,20 @@ void list(Gfx& g, const Theme& th, const ListView& v) {
         if (v.selStyle == ListSel::kWhite) c = th.slot(slot::kList);
         else if (v.selStyle == ListSel::kRed) c = th.slot(slot::kFocusFrame);
         else if (v.selStyle == ListSel::kGreen) c = th.slot(slot::kGreen);
+        if (!v.enabled) c = mix(th.slot(s + 3), c, kEdgeA);   // 7e7e7e on Monochrome [S round 3, 007]
         const int rt = v.y + 4 + kListRowH * (v.sel - v.top);
         stroke(g, v.x + 3, rt, v.x + 3 + innerW, rt + kListRowH, c);
     }
     if (scroll) {
         const int tx = v.x + v.w - 6, ty = v.y + 8, th14 = v.h - 14;
+        // Track with soft 1-px side edges (5b5b5b on Monochrome, round-3
+        // Snapshot_007; 050505 on Original).
+        g.alpha(kEdgeA);
+        g.rectsBegin(th.slot(s + 6));
+        g.rectsAdd(tx - 1, ty, 1, th14);
+        g.rectsAdd(tx + 4, ty, 1, th14);
+        g.rectsEnd();
+        g.alpha(255);
         g.fill(tx, ty, 4, th14, th.slot(s + 6));
         // Thumb travel inset 2 px at both ends of the track (s07 / s09).
         const int travel = th14 - 4;

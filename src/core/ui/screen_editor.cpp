@@ -356,8 +356,10 @@ void EditorScreen::onButton(uint8_t id, uint8_t state) {
                 break;
             case btn::Left: focus = clampi(focus - 1, 0, 3); break;
             case btn::Right: focus = clampi(focus + 1, 0, 3); break;
-            case btn::Up: onEncoder(1); return;
-            case btn::Down: onEncoder(-1); return;
+            // Up / Down (spec 06 §6.3): markers / zoom +-1, but on the effect
+            // list (drawn top to bottom) Up = previous, Down = next effect.
+            case btn::Up: onEncoder(focus == 3 ? -1 : 1); return;
+            case btn::Down: onEncoder(focus == 3 ? 1 : -1); return;
             case btn::Delete:
                 if (focus == 0) startM = 0;
                 else if (focus == 1) endM = 65535;

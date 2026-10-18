@@ -131,6 +131,17 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy build/sim/opentracker-sim \
     --sd /tmp/sd --script sim/scripts/smoke.txt --screenshot out.png
 ```
 
+Key-flow and redraw-rate checks (`make check` runs `scripts/keyflow.txt`):
+
+```
+expect-screen NAME          fail unless the active screen is NAME (e.g. Performance,
+                            Sample Recorder)
+expect-master PAGE SUB      fail unless Master is active on PAGE (0 Master, 1 Track
+                            Mixer, 2 Global Mixer) and sub-page SUB (0 main, 1 Reverb,
+                            2 Delay, 3 Limiter, 4 EQ)
+fps-reset / expect-fps N    fail if fewer than N frames/s were rendered since fps-reset
+```
+
 ## HAL mapping
 
 | interface | simulator |

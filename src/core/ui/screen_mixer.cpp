@@ -70,15 +70,24 @@ void columnBar(Gfx& g, const Theme& th, int k, float v, bool bipolar = false) {
     column(g, th, k);
     bar(g, th, colX(k), wg::kPanelY, 97, wg::kPanelH, v, wg::kThemeColour, bipolar);
 }
+// Line-in send bar: disabled = the muted-fader colour (303030 line on
+// Monochrome) [S round 3, snap 006 / 007].
+void lineInBar(Gfx& g, const Theme& th, int k, uint8_t send, bool off) {
+    column(g, th, k);
+    bar(g, th, colX(k), wg::kPanelY, 97, wg::kPanelH, send / 100.0f,
+        off ? th.slot(slot::kValueBarAlt) : wg::kThemeColour);
+}
 void columnFocus(Gfx& g, const Theme& th, int k) { wg::focusFrame(g, th, colX(k) - 1, 31, colX(k) + 96, 422); }
 // Mixer column header (spec 20 §4.9): 080808 band y 32..58 with soft rows
 // 31 / 59, bold font-4 name centred on 50 + 100 k; body panels from y 64.
+// Band and name in the title-bar colours: 080808 / white on Original,
+// b9b9ba / black on Monochrome [S round 3, snap 009 / 010].
 void header(Gfx& g, const Theme& th, int k, const char* text) {
-    const uint32_t c = 0x080808;
-    wg::panel(g, th, colX(k), 32, 96, 27, c, false);
+    const uint32_t c = th.slot(slot::kTitle + 1);
+    wg::panel(g, th, colX(k), 32, 96, 26, c, false);   // rows 32..58
     wg::blendFill(g, colX(k), 31, 97, 1, c, wg::kEdgeA);
     wg::blendFill(g, colX(k), 59, 97, 1, c, wg::kEdgeA);
-    g.text(50 + 100 * k, 45, kFont4, th.slot(slot::kList + 4), text, IDisplay::kOptCenter);   // ink y 40..51 [S]
+    g.text(50 + 100 * k, 45, kFont4, th.slot(slot::kTitle), text, IDisplay::kOptCenter);   // ink y 40..51 [S]
 }
 void body(Gfx& g, const Theme& th, int x, int w) {
     const uint32_t c = th.slot(slot::kEmptyPanel + 1);
@@ -103,9 +112,15 @@ void optionList(Gfx& g, const Theme& th, int k, const char* const* names, int co
     v.item = [](void* c, int i, char* out, int cap) {
         std::snprintf(out, size_t(cap), "%s", static_cast<Names*>(c)->names[i]);
     };
+    v.enabled = enabled;   // disabled style [S round 3, snap 007 Rate]
     wg::list(g, th, v);
-    if (!enabled) wg::blendFill(g, v.x, v.y, v.w + 1, v.h, th.slot(slot::kEmptyPanel + 1), 160);   // greyed [I]
 }
+// Line-in send text (Reverb / Delay "Line in"): the send byte through the
+// fader table like the levels, "-inf dB" at 0 [S round 3, snap 006 / 007];
+// the send gain is 0.5 * TRK[send] (spec 07 "Line-in sends").
+// Disabled (greyed label, bar and value) while the Global Mixer Line In
+// channel is muted [S snap 006 / 007 / 010 show both; the rule is I].
+bool lineInOff(const Project& p) { return p.u8(pf::kLineInMute) != 0; }
 }  // namespace
 
 void MixerScreen::start(int opt) {
@@ -127,6 +142,12 @@ int MixerScreen::meterBar(float meanLevel) {
     if (db >= kHiDb) return 100;
     return int((db - kLoDb) * 100.0f / (kHiDb - kLoDb));
 }
+
+namespace {
+// "Back" on F8 of the sub-pages sits on the title line of a two-line label
+// with an empty value (ink y 436..446) [S round 3, snap 006..008 / 011].
+void setBack(BottomBar& b) { b.set(7, "Back", " "); }
+}  // namespace
 
 void MixerScreen::refreshBar() {
     BottomBar& b = ui_.bar;
@@ -151,17 +172,18 @@ void MixerScreen::refreshBar() {
             // label is not highlighted [S snap 022]; the sub-pages follow
             // the same rule [I].
         } else if (sub == 1) {
+            // Values as whole percent: Size 0.60 -> "60" [S round 3, snap 006].
             static const char* n[4] = {"Size", "Damping", "Predelay", "Diffusion"};
             for (int i = 0; i < 4; ++i) {
-                std::snprintf(v, sizeof(v), "%.2f", double(p.f32(pf::kReverbSize + 4 * uint32_t(i))));
+                std::snprintf(v, sizeof(v), "%d", int(p.f32(pf::kReverbSize + 4 * uint32_t(i)) * 100.0f + 0.5f));
                 b.set(i, n[i], v);
             }
-            std::snprintf(v, sizeof(v), "%d", p.u8(pf::kLineInReverb));
-            b.set(4, "Line In", v);
-            b.set(7, "Back");
+            levelText(p.u8(pf::kLineInReverb), v, sizeof(v));
+            b.set(4, "Line in", v, !lineInOff(p));
+            setBack(b);
         } else if (sub == 2) {
             const uint8_t fl = p.u8(pf::kDelayFlags);
-            b.set(0, "Ping-pong", fl & 0x80 ? "On" : "Off");
+            b.set(0, "PingPong", fl & 0x80 ? "On" : "Off");
             b.set(1, "Sync", fl & 0x40 ? "On" : "Off");
             b.set(2, "Rate", kDelayRates[clampi(fl & 0x3F, 0, 18)], (fl & 0x40) != 0);
             std::snprintf(v, sizeof(v), "%d ms", p.u16(pf::kDelayTime));
@@ -170,9 +192,9 @@ void MixerScreen::refreshBar() {
             b.set(4, "Feedback", v);
             std::snprintf(v, sizeof(v), "%d Hz", p.u16(pf::kDelayFilter));
             b.set(5, "Filter", v);
-            std::snprintf(v, sizeof(v), "%d", p.u8(pf::kLineInDelay));
-            b.set(6, "Line In", v);
-            b.set(7, "Back");
+            levelText(p.u8(pf::kLineInDelay), v, sizeof(v));
+            b.set(6, "Line in", v, !lineInOff(p));
+            setBack(b);
         } else if (sub == 3) {
             std::snprintf(v, sizeof(v), "%.3fs", p.u16(pf::kLimAttack) / 1000.0);
             b.set(0, "LimiterAtt", v);   // stock limiter labels (STRINGS_DIFF §2)
@@ -181,20 +203,23 @@ void MixerScreen::refreshBar() {
             b.set(1, "LimiterRls", v);
             // Displayed threshold = 20 log10(LIMTHR[v*100/32767] / 32767) (spec 07 Q2).
             const float thr = audio::limiterThreshold(p.u16(pf::kLimThreshold) > 32767 ? 32767 : p.u16(pf::kLimThreshold));
-            std::snprintf(v, sizeof(v), "%.1f dB", thr > 0.0f ? 20.0 * std::log10(double(thr)) : -96.0);
-            b.set(2, "LimiterThr", v);
-            std::snprintf(v, sizeof(v), "-%.1f dB", double(gainReduction));
-            b.set(3, "Gain Reduce", v, false);   // read-only meter (spec 06 §4.3)
+            std::snprintf(v, sizeof(v), "%.2f dB", thr > 0.0f ? 20.0 * std::log10(double(thr)) : -96.0);
+            b.set(2, "LimiterThr", v);   // "-6.00 dB" [S round 3, snap 008]
+            // Read-only meter (spec 06 §4.3): one centred line, no value
+            // [S round 3, snap 008].
+            b.set(3, "Gain Reduce");
             sidechainText(p, p.u8(pf::kSidechain), v, sizeof(v));
             b.set(4, "Sidechain", v);
-            b.set(7, "Back");
+            setBack(b);
         } else {
             static const char* n[5] = {"115 Hz", "330 Hz", "990 Hz", "3000 Hz", "9900 Hz"};
             for (int i = 0; i < 5; ++i) {
-                std::snprintf(v, sizeof(v), "%+.1f dB", double(12.0f * p.f32(pf::kEqGain + 4 * uint32_t(i))));
+                // "0.00 dB" [S round 3, snap 011]; +0.0 rounds to "0.00".
+                const double db = double(12.0f * p.f32(pf::kEqGain + 4 * uint32_t(i)));
+                std::snprintf(v, sizeof(v), "%.2f dB", std::fabs(db) < 0.005 ? 0.0 : db);
                 b.set(i, n[i], v);
             }
-            b.set(7, "Back");
+            setBack(b);
         }
         return;
     }
@@ -215,6 +240,19 @@ void MixerScreen::refreshBar() {
         levelText(p.u8(kGlobalLevel[i]), v, sizeof(v));
         b.set(i, v, p.u8(kGlobalMute[i]) ? "Unmute" : "Mute", !p.u8(kGlobalMute[i]));
         b.highlight(i, held_[i]);
+    }
+}
+
+// Master parameters shown as option lists: Saturation; Delay Ping-pong,
+// Sync, Rate; Limiter Sidechain. The encoder (+ = clockwise) moves their
+// highlight down the list; on value bars it raises the value [S owner test
+// on 1.9.2: "Saturation Right -> Down, Left -> up | Equalizer right -> up"].
+bool MixerScreen::isListParam(int sub, int param) {
+    switch (sub) {
+        case 0: return param == 1;
+        case 2: return param >= 0 && param <= 2;
+        case 3: return param == 3;
+        default: return false;
     }
 }
 
@@ -242,8 +280,10 @@ void MixerScreen::masterChange(int d) {
     } else if (sub == 2) {
         uint8_t fl = p.u8(pf::kDelayFlags);
         switch (param) {
-            case 0: fl = uint8_t(d > 0 ? fl | 0x80 : fl & ~0x80); break;
-            case 1: fl = uint8_t(d > 0 ? fl | 0x40 : fl & ~0x40); break;
+            // Ping-pong / Sync lists "On" above "Off" [S round 3, snap 007]:
+            // + = the next row down (Off), - = the row up (On).
+            case 0: fl = uint8_t(d > 0 ? fl & ~0x80 : fl | 0x80); break;
+            case 1: fl = uint8_t(d > 0 ? fl & ~0x40 : fl | 0x40); break;
             case 2: fl = uint8_t((fl & 0xC0) | clampi((fl & 0x3F) + d, 0, 18)); break;
             case 3: {
                 int t = p.u16(pf::kDelayTime);
@@ -413,8 +453,16 @@ void MixerScreen::onButton(uint8_t id, uint8_t state) {
         return;
     }
     switch (id) {
-        case btn::Up: change(1); break;
-        case btn::Down: change(-1); break;
+        case btn::Up:
+        case btn::Down: {
+            // Value bars: Up = +1, Down = -1. Option lists (drawn top to
+            // bottom): Up = the item above, Down = the item below, like the
+            // encoder (+ = next item down) [S owner test on 1.9.2].
+            int d = id == btn::Up ? 1 : -1;
+            if (page == 0 && isListParam(sub, param)) d = -d;
+            change(d);
+            break;
+        }
         case btn::Left:
         case btn::Right:
             if (page == 0 && sub == 0) param = clampi(param + (id == btn::Right ? 1 : -1), 0, 3);
@@ -426,6 +474,9 @@ void MixerScreen::onButton(uint8_t id, uint8_t state) {
                     if (param == 2 && !sync) param += id == btn::Right ? 1 : -1;
                     if (param == 3 && sync) param += id == btn::Right ? 1 : -1;
                 }
+                // A disabled Line in send (Line In muted) is skipped like
+                // Rate / Time [I]; it is the last parameter of the page.
+                if ((sub == 1 || sub == 2) && param == (sub == 1 ? 4 : 6) && lineInOff(app_.project)) --param;
             }
             break;
         case btn::Delete:
@@ -518,36 +569,45 @@ void MixerScreen::draw(Gfx& g) {
             columnBar(g, th, 7, p.u8(pf::kSpace) / 8.0f);
             columnFocus(g, th, kMainParams[clampi(param, 0, 3)]);
         } else if (sub == 1) {
-            // [I] no stock shot: one value bar per parameter (F1..F5) and an
-            // empty panel over F6..F8 (spec 20 §4.9 recipe).
-            for (int i = 0; i < 4; ++i)
-                columnBar(g, th, i, p.f32(pf::kReverbSize + 4 * uint32_t(i)) / (i == 3 ? 0.85f : 1.0f));
-            columnBar(g, th, 4, p.u8(pf::kLineInReverb) / 100.0f);
+            // One value bar per parameter (F1..F5), an empty panel over
+            // F6..F8 [S round 3, snap 006]. Bars show the stored 0..1 value
+            // (Diffusion 0.80 = 80 % of the well; its range ends at 0.85).
+            for (int i = 0; i < 4; ++i) columnBar(g, th, i, p.f32(pf::kReverbSize + 4 * uint32_t(i)));
+            lineInBar(g, th, 4, p.u8(pf::kLineInReverb), lineInOff(p));
             column(g, th, 5, 3);
             columnFocus(g, th, param);
         } else if (sub == 2) {
-            // [I] no stock shot: on/off and rate lists, bars for the rest.
-            static const char* const kOffOn[2] = {"Off", "On"};
+            // On/Off and rate lists, bars for the rest [S round 3, snap 007];
+            // the Rate list is drawn disabled while Sync is off.
+            static const char* const kOnOff[2] = {"On", "Off"};   // [S round 3, snap 007]
             const uint8_t fl = p.u8(pf::kDelayFlags);
-            optionList(g, th, 0, kOffOn, 2, (fl & 0x80) ? 1 : 0);
-            optionList(g, th, 1, kOffOn, 2, (fl & 0x40) ? 1 : 0);
+            optionList(g, th, 0, kOnOff, 2, (fl & 0x80) ? 0 : 1);
+            optionList(g, th, 1, kOnOff, 2, (fl & 0x40) ? 0 : 1);
             optionList(g, th, 2, kDelayRates, 19, clampi(fl & 0x3F, 0, 18), (fl & 0x40) != 0);
             columnBar(g, th, 3, (p.u16(pf::kDelayTime) - 1) / 3499.0f);
             columnBar(g, th, 4, p.u8(pf::kDelayFeedback) / 100.0f);
             columnBar(g, th, 5, (p.u16(pf::kDelayFilter) - 100) / 19900.0f);
-            columnBar(g, th, 6, p.u8(pf::kLineInDelay) / 100.0f);
+            lineInBar(g, th, 6, p.u8(pf::kLineInDelay), lineInOff(p));
             column(g, th, 7);
             columnFocus(g, th, param);
         } else if (sub == 3) {
-            // [I] no stock shot: Attack / Release / Threshold bars, the
-            // gain-reduction meter above F4 (spec 06 §4.3, red, filling
-            // downwards), the Sidechain list above F5.
+            // Attack / Release / Threshold bars, the gain-reduction meter
+            // above F4 (spec 06 §4.3), the Sidechain list above F5 [S round
+            // 3, snap 008 / 012]. The meter is a bar hanging from the top of
+            // the well in the cyan slot: at no reduction the 1.5-px line on
+            // row 39 (x 313..388, 00a4b3 on Monochrome); it grows downwards.
             columnBar(g, th, 0, (p.u16(pf::kLimAttack) - 1) / 999.0f);
             columnBar(g, th, 1, (p.f32(pf::kLimRelease) - 1.0f) / 999.0f);
             columnBar(g, th, 2, p.u16(pf::kLimThreshold) / 32767.0f);
             column(g, th, 3);
-            const int h = int(gainReduction / kGrRangeDb * 369.0f + 0.5f);
-            if (h > 0) g.fill(colX(3) + 11, 40, 76, h, th.slot(slot::kFocusFrame));
+            {
+                const uint32_t c = th.slot(slot::kCyan);
+                const int fx = colX(3) + 11, fw = 76, top = 39;
+                const int h = int(gainReduction / kGrRangeDb * 369.0f + 0.5f);
+                wg::blendFill(g, fx, top - 1, fw, 1, c, wg::kEdgeA);
+                wg::blendFill(g, fx, top + h + 1, fw, 1, c, wg::kEdgeA);
+                g.fill(fx, top, fw, h + 1, c);
+            }
             char names[11][24];
             const char* list[11];
             for (int i = 0; i < 11; ++i) {
@@ -558,15 +618,18 @@ void MixerScreen::draw(Gfx& g) {
             column(g, th, 5, 3);
             columnFocus(g, th, param == 3 ? 4 : param);
         } else {
-            // [I] no stock shot: five bipolar band bars (-12..+12 dB).
-            for (int i = 0; i < 5; ++i) columnBar(g, th, i, p.f32(pf::kEqGain + 4 * uint32_t(i)), true);
+            // Five band bars filled from the well bottom, -12 dB empty,
+            // 0 dB half, +12 dB full [S round 3, snap 011: 0.00 dB = 185 of
+            // 370 rows].
+            for (int i = 0; i < 5; ++i) columnBar(g, th, i, (p.f32(pf::kEqGain + 4 * uint32_t(i)) + 1.0f) * 0.5f);
             column(g, th, 5, 3);
             columnFocus(g, th, clampi(param, 0, 4));
         }
         return;
     }
-    // Muted fader: 222222 on Original = the fill at ~10 % over the panel [S snap 024].
-    const uint32_t off = wg::mix(th.slot(slot::kEmptyPanel + 1), th.slot(slot::kValueBar), 25);
+    // Muted fader: the value-bar alt slot, 222222 on Original [S snap 024],
+    // 303030 on Monochrome [S round 3, snap 010].
+    const uint32_t off = th.slot(slot::kValueBarAlt);
     const uint32_t green = th.slot(slot::kGreen);
     if (page == 1) {
         // spec 06 §4.4 / VISUAL_DIFF §8.12: per track a header, a 47-px
@@ -599,8 +662,10 @@ void MixerScreen::draw(Gfx& g) {
         body(g, th, x, 96);
         const bool muted = p.u8(kGlobalMute[i]) != 0;
         bar(g, th, x, 64, 32, 359, p.u8(kGlobalLevel[i]) / 100.0f, muted ? off : wg::kThemeColour);
-        bar(g, th, x + 32, 64, 32, 359, 0.0f, green);
-        bar(g, th, x + 64, 64, 32, 359, 0.0f, green);
+        // A muted channel's meters rest in the muted colour too [S round 3,
+        // snap 010 Line In].
+        bar(g, th, x + 32, 64, 32, 359, 0.0f, muted ? off : green);
+        bar(g, th, x + 64, 64, 32, 359, 0.0f, muted ? off : green);
     }
     wg::panel(g, th, 402, 30, 396, wg::kPanelH - 1);
 }

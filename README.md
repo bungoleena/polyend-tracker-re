@@ -14,9 +14,9 @@ Captured on a real Tracker running OpenTracker 1.9.3 (Shift + Power):
 
 | Song | Config: firmware |
 |---|---|
-| ![Song screen](screenshots/song.png) | ![Config, firmware page](screenshots/config-firmware.png) |
+| ![Song screen](../docs/screenshots/song.png) | ![Config, firmware page](../docs/screenshots/config-firmware.png) |
 
-![Games](screenshots/games.png)
+![Games](../docs/screenshots/games.png)
 
 ## What to install
 
@@ -39,7 +39,7 @@ For the device itself you only need the stock firmware file
 ## Build
 
 ```
-make                 # firmware  -> build/PolyendTrackerOTv194.ptf (OpenTracker 1.9.4)
+make                 # firmware  -> build/PolyendTrackerOTv196.ptf (OpenTracker 1.9.6)
 make VERSION=0.2.0   # set the version (the file name stays 24 characters)
 make SELFTEST=1      # hardware selftest -> build/selftest/PolyendTracker_OTst<N>.ptf
 make -C tests        # host unit tests
@@ -80,7 +80,7 @@ power-cycle. Go back to stock the same way with `PolyendTracker_1.9.2.ptf`.
 - The Loader's SD preview decodes into free sample memory, so there is no preview when memory is full; stock streams it.
 - Master EQ, Bass Boost and Space run in the SGTL5000 codec's DSP (DAP), as in stock 1.9.2 (spec 18 §1): the same register values are written at boot, on every edit and on project load. Because the DAP sits after the mix, offline renders and exports do not contain them, as in stock. The simulator has no equivalent DSP. The audible result is defined by the codec and has not yet been compared against a stock unit.
 - The line-in gate and compressor on the delay/reverb sends use the stock settings (gate −32/−38 dB, compressor −40 dB, ratio 35), but the code is OpenTracker's own version of the Audio Dynamics design, so the curves may differ slightly. They run only while the line input has signal and a line-in send is above 0 (spec 04 §5.6).
-- Power: hold for 1.5 s to switch off; "off" is a low-power stop. The EEPROM power flag works as in stock: after switching off, reconnecting power keeps the unit off until the power button is pressed (the `ot_restore.txt` check still runs first). The "Shutting down..." popup shows from the press and closes on an early release, as in stock.
+- Power: hold for 1.5 s to switch off; "off" is a low-power stop. The EEPROM power flag works as in stock: after switching off, reconnecting power keeps the unit off until the power button is pressed (the `ot_restore.txt` check still runs first). The "Shutting down" popup shows from the press with a bar that fills over the 1.5 s hold and closes on an early release, as in stock; its exact look (the stock progress-popup style) is not taken from a stock screenshot.
 - Factory test (Config code F8,F1,F7,F2 or pads 47,10,45,8; spec 05 §2.12): the ten steps are stock's, but the pass rules are OpenTracker's own (the spec has none). Screen and pad lights are judged by eye (F8 pass, F7 fail). Inputs passes when all 33 buttons, 48 pads and both encoder directions were seen; holding Shift 1.5 s skips it. RAM runs 10 passes over the free sample memory only. MIDI expects a DIN loop cable. Radio checks that the tuner accepts 90.0 MHz. Battery is always skipped (no fuel gauge). Audio records 1 s each to `line_in_test.wav` and `mic_test.wav` at the card root. USB/SD writes and verifies a 16 KB file; USB is not checked. F1 leaves at any time. The test never writes the EEPROM, and it ends back in Config. `make SELFTEST=1` remains the boot-time hardware test.
 - `/.develop` overlay (Config): CPU shows the audio render load (min/max/avg/last, as a percentage of the block budget, over 1 s windows; Play resets it). In place of free heap / max stack it shows the SDRAM left by the memory layout and the longest main-loop pass. The simulator shows "CPU n/a".
 - Master Limiter "Reduction" meter: the mean limiter gain of each block, shown in dB on a 0–24 dB bar (the stock scale is unknown).

@@ -233,6 +233,11 @@ struct ListView {
     int set = slot::kList;     // 7-colour set: sel, sel active, thumb, bg, text, marked, track
     ListSel selStyle = ListSel::kFromSet;
     uint8_t font = kFont1;
+    // false: a disabled list (Master Delay Rate while Sync is off, round-3
+    // Snapshot_007): items in the disabled label colour (slot
+    // kBottomLabelOff), the selection outline at half strength over the
+    // list background; the scroll bar is unchanged.
+    bool enabled = true;
     // Item text; `marked` (may be null) selects text colour[5].
     void (*item)(void* ctx, int index, char* out, int cap) = nullptr;
     bool (*marked)(void* ctx, int index) = nullptr;

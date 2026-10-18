@@ -543,7 +543,8 @@ void RecorderScreen::onButton(uint8_t id, uint8_t st) {
         return;
     }
     if (id == btn::Left || id == btn::Right) {
-        sel = clampi(sel + (id == btn::Right ? 1 : -1), 0, 7);
+        sel = arrowSel(sel, id == btn::Right ? 1 : -1, state, a.cfg.recSource == 1);
+        if (state == 1 && (sel == 1 || sel == 2)) view.centre = sel == 1 ? startM : endM;
         refreshBar();
         return;
     }
@@ -622,6 +623,30 @@ void RecorderScreen::onButton(uint8_t id, uint8_t st) {
     }
 }
 
+// Left / Right: previous / next parameter (appendix C §2.13), i.e. only the
+// boxes the F-keys select: setup Source, Radio Freq (radio source), Level,
+// Gain, Monitor; edit Start, End, Zoom. Stepping through every slot 0..7
+// left the focus on blank or action cells where the arrows and the encoder
+// did nothing (user report on 2.0.1, also 1.9.4).
+int RecorderScreen::arrowSel(int sel, int dir, int state, bool radio) {
+    static const int8_t kSetup[] = {0, 1, 4, 5, 6};
+    static const int8_t kEdit[] = {1, 2, 3};
+    const int8_t* list = state == 1 ? kEdit : kSetup;
+    const int n = state == 1 ? 3 : 5;
+    int8_t slots[5];
+    int k = 0;
+    for (int i = 0; i < n; ++i)
+        if (list[i] != 1 || state == 1 || radio) slots[k++] = list[i];
+    if (dir > 0) {
+        for (int i = 0; i < k; ++i)
+            if (slots[i] > sel) return slots[i];
+        return slots[k - 1];
+    }
+    for (int i = k - 1; i >= 0; --i)
+        if (slots[i] < sel) return slots[i];
+    return slots[0];
+}
+
 void RecorderScreen::update(uint32_t now) {
     App& a = app_;
     // Recording finished by the tap itself (memory full, appendix C §2.10).
@@ -635,7 +660,10 @@ void RecorderScreen::update(uint32_t now) {
             ui_.dirty();
         }
         const uint32_t l = a.capture.length();
-        if (l != lastLen_ && now - lastMeterAt_ >= 40) {
+        // Own timer: the meter below advances lastMeterAt_ every frame, so the
+        // recording view (time, waveform, memory) needs a separate 40 ms gate.
+        if (l != lastLen_ && now - lastRecDrawAt_ >= 40) {
+            lastRecDrawAt_ = now;
             lastLen_ = l;
             ui_.dirty();
         }
@@ -647,20 +675,22 @@ void RecorderScreen::update(uint32_t now) {
         lastRadioCheckAt_ = now;
         a.selectInput(1, a.cfg.recGain[1]);
     }
-    // Meter (appendix C §2.6): level every ~10 frames, peak hold falls 1 unit / 500 ms.
-    if (now - lastMeterAt_ >= 160) {
+    // Meter (appendix C §2.6): stock reads the level every frame and lets the
+    // bar fall one unit per update pass once > 500 us have passed (spec 05
+    // appendix A "UI animation timers (micros)": 0x56800). The level is read
+    // once per display frame (kMeterMs) and falls 1 unit per ms, so a 0..100
+    // fall takes 0.1 s; the frame is redrawn only when the bar or the clip
+    // colour changes.
+    if (now - lastMeterAt_ >= kMeterMs) {
+        const uint32_t dt = now - lastMeterAt_;
         lastMeterAt_ = now;
         const int u = meterUnits(a.capture.takePeak());
         if (u >= 85) clipUntil_ = now + 350;
-        if (u >= meter) {
-            meter = u;
-            lastDecayAt_ = now;
-        } else if (now - lastDecayAt_ >= 500) {
-            meter -= int((now - lastDecayAt_) / 500);
-            if (meter < u) meter = u;
-            lastDecayAt_ = now;
-        }
-        if (state == 0) ui_.dirty();
+        const int before = meter;
+        meter = meterFall(meter, u, dt);
+        const bool clip = int32_t(now - clipUntil_) < 0;
+        if (state == 0 && (meter != before || clip != clipShown_)) ui_.dirty();
+        clipShown_ = clip;
     }
     if (seeking_ && a.radio() && !a.radio()->busy()) {
         seeking_ = false;

@@ -330,6 +330,9 @@ public:
     static constexpr float kGrRangeDb = 24.0f;
     static float reductionDb(float meanGain);
     float gainReduction = 0.0f;   // dB, >= 0
+    // True when parameter `param` of Master sub-page `sub` is an option list
+    // (encoder + / Down = next item, Up = previous item) rather than a bar.
+    static bool isListParam(int sub, int param);
 
 private:
     void refreshBar();
@@ -646,6 +649,16 @@ public:
     uint32_t off = 0, len = 0;               // current (cropped) view into the capture buffer
     int undoDepth = 0;
     int meter = 0;          // 0..100 meter units
+    // Level meter ballistics (appendix C §2.6): read every display frame,
+    // instant rise, fall 1 unit per ms down to the current reading.
+    static constexpr uint32_t kMeterMs = 16;
+    // Left / Right target from `sel` (dir +-1) on page `state` (0 setup, 1 edit).
+    static int arrowSel(int sel, int dir, int state, bool radio);
+    static int meterFall(int meter, int reading, uint32_t elapsedMs) {
+        if (reading >= meter) return reading;
+        const int m = meter - int(elapsedMs > 100 ? 100 : elapsedMs);
+        return m > reading ? m : reading;
+    }
     bool sourceOk = true;
     char folder[32] = {};
     char fileName[40] = {};
@@ -675,7 +688,8 @@ private:
     struct View {
         uint32_t off, len;
     } undo_[kUndoLevels] = {};
-    uint32_t lastMeterAt_ = 0, lastDecayAt_ = 0, clipUntil_ = 0;
+    uint32_t lastMeterAt_ = 0, clipUntil_ = 0, lastRecDrawAt_ = 0;
+    bool clipShown_ = false;
     uint32_t lastRadioCheckAt_ = 0;   // radio source re-route (update)
     uint32_t lastLen_ = 0;
     bool seeking_ = false;

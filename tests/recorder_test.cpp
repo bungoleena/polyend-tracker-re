@@ -29,6 +29,15 @@ void toneBlocks(Harness& h, uint64_t on, uint64_t off) {
     };
 }
 
+// Input flowing while the UI runs: ~3 audio blocks per 10 ms loop slice, as
+// on the device (the meter reads the peak since its last frame).
+void live(Harness& h, uint32_t ms) {
+    for (uint32_t t = 0; t < ms; t += 10) {
+        h.audio.pump(3);
+        h.run(10);
+    }
+}
+
 void recordSome(Harness& h, uint32_t blocks) {
     h.tap(btn::F8);   // Record
     CHECK(h.app->capture.recording());
@@ -181,6 +190,30 @@ TEST(recorder_folders_and_names) {
     CHECK(h.fs.dirs.count("Recordings 3"));
 }
 
+// User report (2.0.1, also 1.9.4): "metering on the recording page seems a bit
+// slow". The meter was read every 160 ms and fell 1 unit per 500 ms, so a
+// peak kept the bar up for tens of seconds. Stock reads it every frame and
+// lets it fall one unit per pass (> 500 us, appendix C §2.6 / appendix A
+// timers): it must drop to the new level within ~0.1 s.
+TEST(recorder_meter_follows_input_at_frame_rate) {
+    CHECK_EQ(RecorderScreen::meterFall(90, 95, 16), 95);   // instant rise
+    CHECK_EQ(RecorderScreen::meterFall(90, 10, 16), 74);   // 1 unit per ms
+    CHECK_EQ(RecorderScreen::meterFall(90, 10, 500), 10);  // never below the reading
+    CHECK(RecorderScreen::kMeterMs <= 20);                   // >= 50 readings / s
+    Harness h;
+    bool loud = true;
+    h.lineGen = [&loud](int16_t* b, uint64_t) {
+        for (int i = 0; i < 256; ++i) b[i] = loud ? int16_t((i / 2) % 2 ? 30000 : -30000) : 0;
+    };
+    h.tap(btn::SampleRecorder);
+    RecorderScreen& r = rec(h);
+    live(h, 100);
+    CHECK(r.meter > 85);
+    loud = false;
+    live(h, 150);   // 150 ms of silence
+    CHECK_EQ(r.meter, 0);
+}
+
 TEST(recorder_sources_gain_monitor_meter) {
     Harness h;
     App& a = *h.app;
@@ -190,8 +223,7 @@ TEST(recorder_sources_gain_monitor_meter) {
     h.tap(btn::SampleRecorder);
     RecorderScreen& r = rec(h);
     // Meter follows the input.
-    h.audio.pump(20);
-    h.run(400);
+    live(h, 200);
     CHECK(r.meter > 85);
     // b0 again = next source: radio (no tuner -> not available), mics (no routing hook).
     h.tap(btn::F1);
@@ -409,8 +441,7 @@ TEST(recorder_radio_source_powers_tuner_routes_input_and_records) {
     CHECK_NEAR(tuner.freq, 101.1, 1e-4);
     CHECK(tuner.tunes >= 1);
     // The tuner's audio arrives as the line input: meter and capture follow it.
-    h.audio.pump(20);
-    h.run(400);
+    live(h, 200);
     CHECK(r.meter > 0);
     recordSome(h, 40);
     CHECK(a.capture.length() > 0);

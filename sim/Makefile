@@ -75,11 +75,22 @@ visual-diff: $(BIN) $(VISUAL_DIFF)
 	    $(if $(DEVICE),--device "$(DEVICE)") $(if $(SCENES),--only $(SCENES)) \
 	    $(if $(filter 1,$(ALLOW_FAIL)),--allow-fail)
 
+# Key-flow scripts (2.0.1 user report): Performance entry from every screen,
+# Master pages and sub-pages (scripts/keyflow.txt).
+keyflow-check: $(BIN)
+	rm -rf $(OUT)/check-keys $(OUT)/check-keys.eeprom
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(BIN) --sd $(OUT)/check-keys \
+	    --script scripts/keyflow.txt
+	# Sample Recorder meter redraw rate with a moving input.
+	rm -rf $(OUT)/check-rec $(OUT)/check-rec.eeprom
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(BIN) --sd $(OUT)/check-rec --line-in-tone 440 \
+	    --script scripts/recorder_meter.txt
+
 # Headless smoke test: boot the app on a scratch SD card and save screenshots,
 # then the visual-diff gate (report-only until the 1.9.5 screens land: remove
 # the ALLOW_FAIL line below to make visual failures fail 'check').
 check: ALLOW_FAIL ?= 1
-check: $(BIN) $(JPEG_CHECK) visual-diff
+check: $(BIN) $(JPEG_CHECK) visual-diff keyflow-check
 	$(JPEG_CHECK) fixtures $(OUT)/jpeg-check.png
 	rm -rf $(OUT)/check-sd $(OUT)/check-sd.eeprom
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(BIN) --sd $(OUT)/check-sd \

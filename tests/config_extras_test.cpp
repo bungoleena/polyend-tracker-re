@@ -219,6 +219,32 @@ TEST(power_popup) {
     h.up(btn::Shift);
 }
 
+TEST(power_popup_countdown) {
+    // spec 05 §1.5: the "Shutting down" popup shows the elapsed part of the
+    // 1500 ms hold (0..100 %), redrawn while the button is held.
+    CHECK_EQ(Ui::powerPercent(0), 0);
+    CHECK_EQ(Ui::powerPercent(750), 50);
+    CHECK_EQ(Ui::powerPercent(1500), 100);
+    CHECK_EQ(Ui::powerPercent(4000), 100);
+    Harness h;
+    App& a = *h.app;
+    h.down(btn::Power);   // runs 20 ms
+    CHECK(a.ui.powerPopupOpen());
+    CHECK(h.disp.lastHasText("Shutting down"));
+    const int p0 = a.ui.powerPopupPercent();
+    CHECK(p0 >= 0 && p0 < 10);
+    h.run(700);
+    const int p1 = a.ui.powerPopupPercent();
+    CHECK(p1 >= 45 && p1 <= 55);
+    const int frames = h.disp.swaps;
+    h.run(300);
+    CHECK(h.disp.swaps > frames);   // the bar advances while held
+    CHECK(a.ui.powerPopupPercent() > p1);
+    h.up(btn::Power);     // early release: closed, as before
+    CHECK(!a.ui.powerPopupOpen());
+    CHECK_EQ(a.ui.powerPopupPercent(), 0);
+}
+
 TEST(limiter_gain_reduction_meter) {
     CHECK(MixerScreen::reductionDb(1.0f) == 0.0f);
     CHECK(std::fabs(MixerScreen::reductionDb(0.5f) - 6.0206f) < 0.01f);
@@ -230,7 +256,9 @@ TEST(limiter_gain_reduction_meter) {
     MixerScreen& m = *static_cast<MixerScreen*>(a.ui.screen(kModMaster));
     CHECK_EQ(m.sub, 3);
     CHECK_STR(a.ui.bar.label[3].top, "Gain Reduce");
-    CHECK_STR(a.ui.bar.label[3].bottom, "-0.0 dB");
+    // One centred line, no value [S round 3, Snapshot_008]; the reduction
+    // shows on the cyan meter above F4.
+    CHECK_STR(a.ui.bar.label[3].bottom, "");
 }
 
 TEST(recorder_metronome_config_back) {
