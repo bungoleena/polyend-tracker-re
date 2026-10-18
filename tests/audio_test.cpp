@@ -351,6 +351,43 @@ TEST(loop_modes_boundaries) {
     }
 }
 
+// --- Beat Slice: the note picks the slice (USER_REPORTS_R2 §1, item 1a) -------
+
+TEST(beat_slice_note_selects_slice) {
+    initTables();
+    auto data = rampSample();
+    VoiceControl c;
+    c.antiAliasing = false;
+    Instrument ins = plainInstrument(65535, PlayMode::BeatSlice);
+    ins.sliceCount = 4;
+    ins.slices[0] = 0;
+    ins.slices[1] = 10000;
+    ins.slices[2] = 20000;
+    ins.slices[3] = 30000;
+    ins.selectedSlice = 0;   // the Sample Playback selection must not matter in Beat Slice
+    auto first = [&](uint8_t note, uint8_t fxT = 0, uint8_t fxV = 0) {
+        Voice v;
+        v.noteOn(&ins, data.data(), 65535, note, -1, fxT, fxV, 0, 0);
+        auto out = renderVoice(v, 1, c);
+        CHECK_NEAR(v.rate(), pitchRate(60), 1e-6);   // unity regardless of the note
+        return idxOf(out[0]);
+    };
+    for (int k = 0; k < 4; ++k) CHECK_EQ(first(uint8_t(24 + k)), k * 10000);
+    CHECK_EQ(first(10), 0);        // below 24 -> first slice
+    CHECK_EQ(first(60), 30000);    // past the count -> last slice
+    // A Slice FX wins over the note and wraps modulo the count (spec 16 §A.11).
+    CHECK_EQ(first(24, kFxSlice, 2), 20000);
+    CHECK_EQ(first(27, kFxSlice, 5), 10000);
+    // Slice mode (4) keeps playing the selected slice, pitched by the note.
+    ins.playMode = uint8_t(PlayMode::Slice);
+    ins.selectedSlice = 2;
+    Voice s;
+    s.noteOn(&ins, data.data(), 65535, 72, -1, 0, 0, 0, 0);
+    auto out = renderVoice(s, 1, c);
+    CHECK_EQ(idxOf(out[0]), 20000);
+    CHECK_NEAR(s.rate(), pitchRate(72), 1e-6);
+}
+
 // --- envelope (spec 04 §4.7) --------------------------------------------------
 
 TEST(envelope_timing) {

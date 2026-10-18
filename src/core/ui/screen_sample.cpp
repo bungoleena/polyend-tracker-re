@@ -87,6 +87,7 @@ void PlaybackScreen::stop() {
     app_.previewAllOff();
     heldPoints = 0;
     midiNote = -1;
+    headTrack_ = headX_ = -1;
     // The stock detector keeps running in the background service; here it is
     // stepped by this screen, so finish it before the bank can move.
     if (slicer.busy()) {
@@ -96,11 +97,41 @@ void PlaybackScreen::stop() {
 }
 
 void PlaybackScreen::update(uint32_t now) {
-    (void)now;
     // spec 13 §F.1: one 2048-frame block per main-loop pass.
     if (slicer.busy()) slicer.step();
     if (wasBusy_ && !slicer.busy()) sliceDone();
     wasBusy_ = slicer.busy();
+    // spec 05 §6 (0x52cc0): the playhead is redrawn every >= 5 ms; a frame
+    // is requested only when its pixel moves (or it appears / disappears).
+    if (now - headAt_ >= kHeadPollMs) {
+        headAt_ = now;
+        if (playheadX() != headX_) ui_.dirty();
+    }
+}
+
+void PlaybackScreen::followHead(uint16_t voiceId) {
+    headTrack_ = app_.auditionTrack(voiceId);
+    headAt_ -= kHeadPollMs;   // poll on the next pass
+}
+
+int PlaybackScreen::playheadX() const {
+    // USER_REPORTS_R2 §1c: the play position of the voice this screen last
+    // started (pads, Enc-push, F1 Preview, MIDI in), all play modes, while
+    // that voice still plays the current instrument. SPEC GAP: no stock
+    // capture of the look; drawn as a 1-px line in the Loader trim
+    // playhead's colour (th.good).
+    const App& a = app_;
+    const uint8_t ci = a.currentInstrument();
+    if (headTrack_ < 0 || headTrack_ >= audio::kVoices || ci >= kSampleInstrumentCount) return -1;
+    if (a.engine.voice(headTrack_).instrument() != &a.instruments[ci]) return -1;
+    const int32_t p = a.engine.voicePlayhead(headTrack_);
+    const uint32_t len = a.bank.frames(ci);
+    if (p < 0 || len == 0) return -1;
+    const uint32_t m = uint32_t(uint64_t(uint32_t(p) < len ? uint32_t(p) : len) * 65535u / len);
+    float v0, v1;
+    view.window(&v0, &v1);
+    const int x = markerX(uint16_t(m), v0, v1);
+    return x >= kWaveX && x < kWaveX + kWaveW ? x : -1;
 }
 
 void PlaybackScreen::sliceDone() {
@@ -492,8 +523,10 @@ void PlaybackScreen::onButton(uint8_t id, uint8_t state) {
     const bool slice = isSlice(mode);
     // b0 Preview (type 3): note 60 velocity 127, release = note off (§1.6).
     if (id == btn::F1 && !slice) {
-        if (state == kPress) a.previewOn(App::kAuditionSampleEditor, ci, 60, 127);
-        else if (state == kRelease) a.previewOff(App::kAuditionSampleEditor);
+        if (state == kPress) {
+            a.previewOn(App::kAuditionSampleEditor, ci, 60, 127);
+            followHead(App::kAuditionSampleEditor);
+        } else if (state == kRelease) a.previewOff(App::kAuditionSampleEditor);
         return;
     }
     // Enc-push (0x21): pad-12 preview; selects slice 12 in Beat Slice (§1.6).
@@ -613,16 +646,19 @@ void PlaybackScreen::onButton(uint8_t id, uint8_t state) {
 
 void PlaybackScreen::onPad(uint8_t pad, uint8_t state) {
     // §1.10: pad -> note through the pad map, velocity 127; Beat Slice also
-    // selects slice = pad when it exists.
+    // selects slice = pad when it exists. The selection is written BEFORE the
+    // note-on: an idle voice starts inside the call (USER_REPORTS_R2 §1b).
     const uint8_t ci = app_.currentInstrument();
-    Screen::onPad(pad, state);
-    if (state != kPress || ci >= kSampleInstrumentCount) return;
-    Instrument& in = app_.instruments[ci];
-    if (in.playMode == uint8_t(PlayMode::BeatSlice) && pad < in.sliceCount) {
-        in.selectedSlice = pad;
-        keepVisible(in.slices[pad], false);
-        refreshBar();
+    if (state == kPress && ci < kSampleInstrumentCount) {
+        Instrument& in = app_.instruments[ci];
+        if (in.playMode == uint8_t(PlayMode::BeatSlice) && pad < in.sliceCount) {
+            in.selectedSlice = pad;
+            keepVisible(in.slices[pad], false);
+            refreshBar();
+        }
     }
+    Screen::onPad(pad, state);
+    if (state == kPress) followHead(pad);
 }
 
 bool PlaybackScreen::onMidiNote(uint8_t note, uint8_t velocity, bool on) {
@@ -630,11 +666,13 @@ bool PlaybackScreen::onMidiNote(uint8_t note, uint8_t velocity, bool on) {
     // the call b0 Preview makes with note 60 (appendix B §1.6). SPEC GAP
     // (§1.12 leaves the owner semantics to the screen): one preview voice
     // (the b0 voice), the last note sounds and only its note-off releases
-    // it; velocity as on the live path; Beat Slice selects no slice.
+    // it; velocity as on the live path; in Beat Slice note n plays slice n - 24
+    // (the voice derives it, USER_REPORTS_R2 §1a).
     App& a = app_;
     if (on) {
         if (a.previewOn(App::kAuditionSampleEditor, a.currentInstrument(), note, velocity) >= 0) midiNote = note;
         else midiNote = -1;
+        followHead(App::kAuditionSampleEditor);
     } else if (midiNote == int(note)) {
         a.previewOff(App::kAuditionSampleEditor);
         midiNote = -1;
@@ -717,6 +755,8 @@ void PlaybackScreen::draw(Gfx& g) {
         if (inView(x)) waveMarker(g, th, x, sel == 1 ? th.accent : th.slot(slot::kWave), 1, true, false,
                                   kMarkTop, kMarkBottom);
     }
+    headX_ = playheadX();
+    if (headX_ >= 0) g.vline(headX_, kWaveY, kWaveH, th.good);
     drawModeList(g, th, mode);
 }
 

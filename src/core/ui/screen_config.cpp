@@ -104,11 +104,20 @@ const Opt kMetronome[] = {
     {"Time signature denum", kEnum, kCfg, CF(tsDen), 0, 12, kOneTo12, 0},
     {"Volume", kNum, kCfg, CF(metronomeVolume), 0, 100, nullptr, 0},
 };
+// /.develop only (USER_REPORTS_R2 §2): the headphone-amp level for A/B
+// measurement against stock, whose boot value is unknown. volume(v) per
+// spec 01 §5.1: HP_CTRL = 0x80 - round(v * 129), 0x18 = 0 dB, 0.5 dB/step.
+// Capped at 0.85 (HP-amp clipping risk above). Not saved.
+const char* const kHpLevels[] = {"0.50 (-19.5 dB)", "0.55 (-16.5 dB)", "0.60 (-13.5 dB)", "0.65 (-10.0 dB)",
+                                 "0.70 (-7.0 dB)",  "0.75 (-3.5 dB)",  "0.80 (-0.5 dB)",  "0.85 (+3.0 dB)"};
+uint8_t gHpLevel = 4;   // 0.70, app_main's boot value
+constexpr uint8_t kDev = 4;   // Opt::store: RAM only, /.develop rows (2.x uses 3 for kUsb)
 const Opt kFirmware[] = {
     {"Firmware update", kAction, kNone, 1, 0, 0, nullptr, 0},
     {"Current version", kText, kNone, 0, 0, 0, nullptr, 0},
     {"Build", kText, kNone, 1, 0, 0, nullptr, 0},
     {"Reset config", kAction, kNone, 2, 0, 0, nullptr, 0},
+    {"HP level", kEnum, kDev, 0, 0, 8, kHpLevels, 0},   // /.develop only, keep last
 };
 const Opt kInfo[] = {
     {"Licenses", kAction, kNone, 3, 0, 0, nullptr, 0},
@@ -129,6 +138,11 @@ const Cat kCats[] = {
     {"Info", kInfo, int(sizeof(kInfo) / sizeof(Opt))},
 };
 constexpr int kCatCount = int(sizeof(kCats) / sizeof(Cat));
+bool gDevRows = false;   // /.develop: show the develop-only rows (ConfigScreen::start)
+
+// Visible options of a category: the trailing develop row of Firmware only
+// in /.develop mode.
+int catCount(int cat) { return kCats[cat].count - (kCats[cat].opts == kFirmware && !gDevRows ? 1 : 0); }
 
 int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -218,6 +232,7 @@ const uint8_t kCodePads[4] = {47, 10, 45, 8};
 static uint8_t* optVar(App& a, const Opt& o) {
     if (o.store == kCfg) return reinterpret_cast<uint8_t*>(&a.cfg) + o.off;
     if (o.store == kProj) return &a.project.values[o.off - mt::kValuesOff];
+    if (o.store == kDev) return &gHpLevel;
     return nullptr;
 }
 
@@ -254,6 +269,8 @@ void ConfigScreen::start(int opt) {
     gFwMode = false;
     gLicMode = false;
     focus = 0;
+    gDevRows = ui_.developMode();
+    option = clampi(option, 0, catCount(category) - 1);
     refreshBar();
 }
 
@@ -332,7 +349,7 @@ void ConfigScreen::refreshBar() {
     b.separators = 0xC4;
     const Cat& c = kCats[category];
     b.setWide(0, c.name);
-    const Opt& o = c.opts[clampi(option, 0, c.count - 1)];
+    const Opt& o = c.opts[clampi(option, 0, catCount(category) - 1)];
     // F3..F6: "▲ <item> ▼" centred on 400 (also while the category list has
     // the focus [S snap 004]).
     b.setWide(3, gFwMode ? "Firmware update" : o.name);
@@ -352,7 +369,7 @@ void ConfigScreen::moveCat(int d) {
     category = clampi(category + d, 0, kCatCount - 1);
     option = 0;
 }
-void ConfigScreen::moveOpt(int d) { option = clampi(option + d, 0, kCats[category].count - 1); }
+void ConfigScreen::moveOpt(int d) { option = clampi(option + d, 0, catCount(category) - 1); }
 void ConfigScreen::movePick(int d) {
     const Opt& o = kCats[category].opts[option];
     const int n = gFwMode ? gFwCount : optCount(o);
@@ -410,6 +427,12 @@ void ConfigScreen::enter() {
 
 void ConfigScreen::apply() {
     App& a = app_;
+    if (!gFwMode && kCats[category].opts[option].store == kDev) {   // /.develop HP level (RAM only)
+        gHpLevel = uint8_t(clampi(picker, 0, 7));
+        if (ui_.platform.setHeadphoneLevel) ui_.platform.setHeadphoneLevel(0.5f + 0.05f * float(gHpLevel));
+        editing = false;
+        return;
+    }
     if (gFwMode) {
         if (picker < 0 || picker >= gFwCount) return;
         ui_.ask("Flash new firmware?", gFw[picker], nullptr, "Cancel", "Yes",
@@ -620,17 +643,17 @@ void ConfigScreen::draw(Gfx& g) {
     wg::ListView ov;
     ov.x = 201;
     ov.w = 397;
-    ov.count = c.count;
+    ov.count = catCount(category);
     ov.sel = option;
     ov.selStyle = wg::ListSel::kWhite;
-    gOptTop = wg::listFollow(option, c.count, wg::listVisibleRows(ov.h), focus == 1 ? gOptTop : 0);
+    gOptTop = wg::listFollow(option, catCount(category), wg::listVisibleRows(ov.h), focus == 1 ? gOptTop : 0);
     ov.top = gOptTop;
     ov.item = optItem;
     ov.ctx = &x;
     wg::list(g, th, ov);
     char v[48];
     const int rows = wg::listVisibleRows(ov.h);
-    for (int r = 0; r < rows && ov.top + r < c.count; ++r) {
+    for (int r = 0; r < rows && ov.top + r < catCount(category); ++r) {
         const Opt& o = c.opts[ov.top + r];
         optValueText(a, o, optIndex(a, o), v, sizeof(v));
         if (v[0])
@@ -645,10 +668,10 @@ void ConfigScreen::draw(Gfx& g) {
 
 int ConfigScreen::categoryCount() { return kCatCount; }
 const char* ConfigScreen::categoryName(int cat) { return cat >= 0 && cat < kCatCount ? kCats[cat].name : ""; }
-int ConfigScreen::optionCount(int cat) { return cat >= 0 && cat < kCatCount ? kCats[cat].count : 0; }
+int ConfigScreen::optionCount(int cat) { return cat >= 0 && cat < kCatCount ? catCount(cat) : 0; }
 
 bool ConfigScreen::optionInfo(int cat, int i, OptionInfo* out) {
-    if (cat < 0 || cat >= kCatCount || i < 0 || i >= kCats[cat].count || !out) return false;
+    if (cat < 0 || cat >= kCatCount || i < 0 || i >= catCount(cat) || !out) return false;
     const Opt& o = kCats[cat].opts[i];
     out->name = o.name;
     out->kind = o.kind;
@@ -661,13 +684,13 @@ bool ConfigScreen::optionInfo(int cat, int i, OptionInfo* out) {
 }
 
 int ConfigScreen::optionIndex(int cat, int i) const {
-    if (cat < 0 || cat >= kCatCount || i < 0 || i >= kCats[cat].count) return -1;
+    if (cat < 0 || cat >= kCatCount || i < 0 || i >= catCount(cat)) return -1;
     return optIndex(app_, kCats[cat].opts[i]);
 }
 
 void ConfigScreen::optionText(int cat, int i, char* out, int cap) const {
     out[0] = 0;
-    if (cat < 0 || cat >= kCatCount || i < 0 || i >= kCats[cat].count) return;
+    if (cat < 0 || cat >= kCatCount || i < 0 || i >= catCount(cat)) return;
     const Opt& o = kCats[cat].opts[i];
     optValueText(app_, o, optIndex(app_, o), out, cap);
 }

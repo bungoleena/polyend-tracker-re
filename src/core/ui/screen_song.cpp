@@ -88,6 +88,7 @@ int SongScreen::length() const {
 void SongScreen::start(int opt) {
     (void)opt;
     cursor = clampi(cursor, 0, length() - 1);
+    followPos_ = -1;   // re-join the playing slot on entry
     if (!edit && focus == 0) focus = 1;
     refreshBar();
 }
@@ -486,12 +487,21 @@ void SongScreen::update(uint32_t now) {
     }
     if (now - lastUpdate_ < 100) return;   // spec 06 §2.6
     lastUpdate_ = now;
+    // The cursor follows the playing slot when that slot CHANGES (and on play
+    // start / screen entry / leaving edit mode); in between Up/Down browse
+    // the list (USER_REPORTS_R2 §4; spec 06 §2.6 does not say whether stock
+    // re-copies on every tick).
     if (a.seq.isPlaying() && (a.seq.isSongMode() || loopInSong_) && !edit) {
         const int pos = a.seq.songPosition();
-        if (pos != cursor && pos < length()) {
-            cursor = pos;
-            ui_.dirty();
+        if (pos != followPos_) {
+            followPos_ = pos;
+            if (pos != cursor && pos < length()) {
+                cursor = pos;
+                ui_.dirty();
+            }
         }
+    } else {
+        followPos_ = -1;
     }
     // spec 06 §2.4: the timeout clears only the display flag; the count is
     // kept, so the next tap abandons the series (count := 0).

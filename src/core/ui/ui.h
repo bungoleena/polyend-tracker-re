@@ -256,6 +256,9 @@ struct DevStats {
 struct UiPlatform {
     bool (*devStats)(DevStats& out) = nullptr;
     void (*devStatsReset)() = nullptr;   // Config Play resets the CPU statistics
+    // Config /.develop "HP level" (USER_REPORTS_R2 §2): device sets the codec
+    // headphone amp (volume(v), spec 01 §5.1) and logs it to diag.
+    void (*setHeadphoneLevel)(float v) = nullptr;
     // Power-on checks for the factory test's first page; returns the count.
     int (*bootChecks)(FactoryCheck* out, int cap) = nullptr;
     // First frame per screen that did not fit the FT81x RAM_DL (the guard

@@ -247,6 +247,7 @@ void Voice::startNote() {
     pending_.valid = false;
     mode_ = ins_->playMode > 7 ? 0 : ins_->playMode;
     note_ = mode_ == uint8_t(PlayMode::BeatSlice) ? uint8_t(kUnityNote) : pending_.note;   // §2.3
+    sliceNote_ = pending_.note;   // Beat Slice: the note picks the slice (computePoints)
     reverse_ = reverseFx_ != perf_.reverse;
     slideSemis_ = 0.0f;
     frac_ = 0;
@@ -306,8 +307,11 @@ void Voice::computePoints() {
     if (mode_ == uint8_t(PlayMode::Slice) || mode_ == uint8_t(PlayMode::BeatSlice)) {
         const int count = ins_->sliceCount > kSliceCount ? kSliceCount : ins_->sliceCount;
         if (count > 0) {
-            int idx = sliceSel_ != 0xFF ? sliceSel_ : ins_->selectedSlice;
-            idx %= count;   // spec 16 §A.11: a slice above the count wraps
+            int idx;
+            if (sliceSel_ != 0xFF) idx = sliceSel_ % count;   // Slice FX wins and wraps (spec 16 §A.11)
+            else if (mode_ == uint8_t(PlayMode::BeatSlice))      // note n plays slice n - 24 (spec 05 §4.1, 06 §1.6)
+                idx = clampi(int32_t(sliceNote_) - 24, 0, count - 1);
+            else idx = ins_->selectedSlice % count;            // Slice: the selected slice, pitched by the note
             start_ = pointToFrames(len, ins_->slices[idx]);
             // Slice end = next slice start, else the end point (spec 04 §2.3, I).
             int32_t e = idx + 1 < count ? pointToFrames(len, ins_->slices[idx + 1]) : pointToFrames(len, ins_->endPoint);

@@ -121,6 +121,9 @@ public:
     float rate() const { return targetRate_ + glideOff_; }
     float modOutput(int slot) const { return mods_[slot].out; }
     float envelopeLevel() const { return env_.level(); }
+    // Play position (absolute sample frame) while the player runs, -1 otherwise.
+    // Read from the UI as a snapshot: one aligned 32-bit load, no lock.
+    int32_t playhead() const { return playing_ ? pos_ : -1; }
 
 private:
     struct Pending {
@@ -170,6 +173,7 @@ private:
     const int16_t* data_ = nullptr;
     uint32_t frames_ = 0;
     uint8_t note_ = 60;
+    uint8_t sliceNote_ = 60;   // the note before the Beat Slice unity override
     Pending pending_;
 
     // player state (spec 04 §2.1); positions are absolute frame indices

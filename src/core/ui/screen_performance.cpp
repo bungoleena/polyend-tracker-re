@@ -589,27 +589,109 @@ void PerformanceScreen::draw(Gfx& g) {
     // four stored rows at a 30-px pitch, the active row green [S snap 021].
     const int set = slot::kPerfPanels;
     const uint32_t bg = th.slot(set + 1), textC = th.slot(set), hiC = th.slot(set + 2);
+    // Drawn in layers over all 12 columns instead of column by column: the
+    // RECTS batches keep the display list (RAM_DL, 8 KB) well inside the
+    // FT81x limit -- column by column this screen came close to it and on
+    // hardware could overflow (the RAM_DL guard then drops detail). The
+    // columns do not overlap and each column keeps its own drawing order,
+    // so the pixels are the same.
+    auto colX = [](int c) { return 11 + 65 * c; };
+    // 1. Panel bodies (opaque): title band y 34..70, body y 279..424.
+    g.rectsBegin(bg);
     for (int c = 0; c < perf::kSlots; ++c) {
-        const int x = 11 + 65 * c, cx = x + 32;
+        g.rectsAdd(colX(c), 34, 63, 37);
+        g.rectsAdd(colX(c), 279, 63, 146);
+    }
+    g.rectsEnd();
+    // 2. Soft 1-px side edges and the blended rows 33 / 70 / 278 (row 70
+    //    lies on the title band: after 1). The column after the one being
+    //    edited leaves its translucent left pixels to step 5 (drawn once,
+    //    over the focus frame, as column by column).
+    const int after = edit && column >= 0 && column + 1 < perf::kSlots ? column + 1 : -1;
+    g.alpha(wg::kEdgeA);
+    g.rectsBegin(bg);
+    for (int c = 0; c < perf::kSlots; ++c) {
+        const int x = colX(c), skip = c == after ? 1 : 0;
+        if (!skip) {
+            g.rectsAdd(x - 1, 34, 1, 37);
+            g.rectsAdd(x - 1, 279, 1, 146);
+        }
+        g.rectsAdd(x + 63, 34, 1, 37);
+        g.rectsAdd(x + 63, 279, 1, 146);
+        g.rectsAdd(x + skip, 33, 63 - skip, 1);
+        g.rectsAdd(x, 70, 63, 1);
+        g.rectsAdd(x + skip, 278, 63 - skip, 1);
+    }
+    g.rectsEnd();
+    g.alpha(255);
+    // 3. Body fades (one clipped gradient each).
+    for (int c = 0; c < perf::kSlots; ++c) wg::bottomFade(g, th, colX(c), 279, 62, 145, bg);
+    // 4. Values, FX names and stored rows; "---" cells are collected and
+    //    drawn as one batch per colour (three 6 x 1 dashes each).
+    struct Dash {
+        int16_t cx, cy;
+    };
+    Dash dashes[2][perf::kSlots * (perf::kRows + 1)];
+    int nDash[2] = {0, 0};
+    auto put = [&](int cx, int cy, bool hi, const char* v) {
+        if (std::strcmp(v, "---") == 0) {
+            dashes[hi][nDash[hi]++] = Dash{int16_t(cx), int16_t(cy)};
+            return;
+        }
+        cell(g, cx, cy, hi ? hiC : textC, v);
+    };
+    for (int c = 0; c < perf::kSlots; ++c) {
+        const int x = colX(c), cx = x + 32;
         const uint8_t ty = src.type(c);
-        wg::panel(g, th, x, 34, 62, 36, bg, false);
-        wg::blendFill(g, x, 33, 63, 1, bg, wg::kEdgeA);
-        wg::blendFill(g, x, 70, 63, 1, bg, wg::kEdgeA);
-        wg::panel(g, th, x, 279, 62, 145, bg);
-        wg::blendFill(g, x, 278, 63, 1, bg, wg::kEdgeA);
         char v[12] = "";
         if (ty != 0) cellText(ty, liveValid[c] ? live[c] : cur[c], v, sizeof(v));
-        cell(g, cx, kTitleValueY, textC, v);
+        put(cx, kTitleValueY, false, v[0] ? v : "");
         if (ty != 0)
             g.textRotated(cx + kLabelDx, kLabelBottom - textWidth(kFont2, perf::fx(ty).name), kFont2,
                           th.slot(slot::kPerfVertical), perf::fx(ty).name, 1, IDisplay::kOptCenterX);
         for (int r = 0; r < perf::kRows; ++r) {
             v[0] = 0;
             if (ty != 0) cellText(ty, src.value(c, r), v, sizeof(v));
-            cell(g, cx, kRowY + 30 * r, src.row(c) == r ? hiC : textC, v);
+            put(cx, kRowY + 30 * r, src.row(c) == r, v);
         }
-        // Edit mode: the column being edited carries the red focus frame [I].
-        if (edit && c == column) wg::focusFrame(g, th, x - 1, 31, x + 63, 422);
+    }
+    g.alpha(222);
+    for (int hi = 0; hi < 2; ++hi) {
+        if (!nDash[hi]) continue;
+        g.rectsBegin(hi ? hiC : textC);
+        for (int i = 0; i < nDash[hi]; ++i)
+            for (int k = 0; k < 3; ++k) g.rectsAdd(dashes[hi][i].cx - 14 + 10 * k, dashes[hi][i].cy + 1, 6, 1);
+        g.rectsEnd();
+    }
+    g.alpha(255);
+    // 5. Edit mode: the column being edited carries the red focus frame [I].
+    //    Column by column, the next column was drawn over the frame's right
+    //    side (its edge at x + 64 and first pixel column x + 65): redraw that
+    //    strip in the next column's order (edge, body, blended rows, fade).
+    if (edit && column >= 0 && column < perf::kSlots) {
+        const int x = colX(column);
+        wg::focusFrame(g, th, x - 1, 31, x + 63, 422);
+        if (column + 1 < perf::kSlots) {
+            const int nx = colX(column + 1);   // x + 65
+            g.alpha(wg::kEdgeA);
+            g.rectsBegin(bg);
+            g.rectsAdd(nx - 1, 34, 1, 37);
+            g.rectsAdd(nx - 1, 279, 1, 146);
+            g.rectsEnd();
+            g.alpha(255);
+            g.rectsBegin(bg);
+            g.rectsAdd(nx, 34, 1, 37);
+            g.rectsAdd(nx, 279, 1, 146);
+            g.rectsEnd();
+            g.alpha(wg::kEdgeA);
+            g.rectsBegin(bg);
+            g.rectsAdd(nx, 33, 1, 1);
+            g.rectsAdd(nx, 70, 1, 1);
+            g.rectsAdd(nx, 278, 1, 1);
+            g.rectsEnd();
+            g.alpha(255);
+            wg::bottomFade(g, th, nx, 279, 62, 145, bg);   // opaque, no text there
+        }
     }
     for (int t = 0; t < 8; ++t) {
         const BarLabel& l = ui_.bar.label[t];

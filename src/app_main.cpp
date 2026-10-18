@@ -114,6 +114,20 @@ void dlOverflow(const char* screen, uint32_t words, uint32_t dropped, bool lowDe
                       lowDetail ? " (low detail)" : "; low detail from the next frame");
 }
 
+// Headphone-amp level (spec 01 §5.1 volume(v)); the stock boot value is not
+// in the specs, so the Config /.develop "HP level" row can change it for
+// measurement (USER_REPORTS_R2 §2). Logged with the HP_CTRL step.
+void logHeadphoneLevel(float v) {
+    const unsigned n = unsigned(v * 129.0f + 0.5f), reg = n >= 128 ? 0u : 0x80u - n;
+    const int halfDb = 0x18 - int(reg);   // 0x18 = 0 dB, 0.5 dB per step
+    ot::hal::diagLogf("audio: HP level %u/100 (HP_CTRL 0x%02X, %s%d.%d dB)", unsigned(v * 100.0f + 0.5f), reg,
+                      halfDb < 0 ? "-" : "+", (halfDb < 0 ? -halfDb : halfDb) / 2, (halfDb & 1) ? 5 : 0);
+}
+void setHeadphoneLevel(float v) {
+    ot::hal::audio().setHeadphoneVolume(v);
+    logHeadphoneLevel(v);
+}
+
 bool devStats(ot::DevStats& d) {
     d.cpuMin = permille(gDevWindow.min());
     d.cpuMax = permille(gDevWindow.maxC);
@@ -314,6 +328,8 @@ void otAppMain(ot::hal::HalSet& hal) {
     hal::setPowerOffHook(&powerOffHook);
     gApp.ui.platform.devStats = &devStats;         // Config /.develop overlay (spec 06 §7.2)
     gApp.ui.platform.devStatsReset = &devStatsReset;
+    gApp.ui.platform.setHeadphoneLevel = &setHeadphoneLevel;   // Config /.develop HP level
+    logHeadphoneLevel(0.7f);   // the boot value set above, for the diag log
     gApp.ui.platform.bootChecks = &bootChecks;     // factory test (spec 05 §2.12)
     gApp.ui.platform.dlOverflow = &dlOverflow;     // RAM_DL guard (Ui::render)
     if (hal::bootReport().sdMounted) gApp.boot();

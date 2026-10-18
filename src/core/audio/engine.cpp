@@ -232,6 +232,7 @@ bool AudioEngine::init(int16_t* fx, size_t fxSamples, int16_t* pool, size_t pool
         voices_[v].reset();
         voices_[v].setSeed(0x9E3779B9u * uint32_t(v + 1));
     }
+    for (int t = 0; t < kVoices; ++t) head_[t] = -1;
     limL_.reset();
     limR_.reset();
     dynL_.reset();
@@ -478,6 +479,7 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
             pk = b > pk ? b : pk;
             peak_[t] = pk > 1.0f ? 1.0f : pk;
         }
+        head_[t] = voices_[t].playhead();
     }
     // 4. line input (§1.3 IG): channel mode, direct level, sends. A block of
     //    digital silence is treated like no input (identical result).

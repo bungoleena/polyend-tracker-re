@@ -607,6 +607,12 @@ TEST(overlay_matrix_screens) {
     CHECK(a.ui.picker.isOpen());
     r.measure("sample playback + chooser");
     h.up(btn::Instr);
+    h.push(InputEvent::kPadDown, 0);   // playhead line (USER_REPORTS_R2 §1c)
+    h.audio.pump(4);
+    h.run(40);
+    CHECK(static_cast<PlaybackScreen*>(a.ui.screen(kModPlayback))->drawnHeadX() >= 0);
+    r.measure("sample playback + playhead");
+    h.push(InputEvent::kPadUp, 0);
     a.setCurrentInstrument(1);
     r.screen(btn::SampleEditor, "sample editor (stereo)");
     h.down(btn::Instr);

@@ -196,12 +196,18 @@ public:
     // Peak |post-pan| level of track t (0..1) since the previous call (UI meters).
     float trackPeak(int t);
 
+    // Play position (sample frame) of track t's voice as of the last rendered
+    // block, -1 when its player is stopped. A per-block snapshot, safe to read
+    // from the UI without locking (USER_REPORTS_R2 §1c).
+    int32_t voicePlayhead(int t) const { return t >= 0 && t < kVoices ? head_[t] : -1; }
+
     // Performance FX offsets for track t (spec 06 §3.2/§3.4).
     void setPerf(int track, const PerfOffsets& p) { if (track >= 0 && track < kVoices) voices_[track].setPerf(p); }
 
     void stopAll();
     void clearEffects();   // zero delay and reverb memory
     Voice& voice(int t) { return voices_[t]; }
+    const Voice& voice(int t) const { return voices_[t]; }
 
     // Offline rendering (spec 04 §6.1).
     void beginOffline();
@@ -269,6 +275,7 @@ private:
         bool stereo = false;
     } raw_;
     volatile float peak_[kVoices] = {};
+    volatile int32_t head_[kVoices] = {};   // voicePlayhead() snapshot (init() sets -1)
 
     // metronome click instruments (normal / accent finetune, spec 07 Q10)
     Instrument clickIns_[2];

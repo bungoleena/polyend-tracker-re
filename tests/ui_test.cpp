@@ -578,3 +578,143 @@ TEST(audition_track_voice_allocation) {
     CHECK_EQ(a.previewOn(5, 0, 60, 127, 6), 6);
     a.previewAllOff();
 }
+
+// USER_REPORTS_R2 §1b: on Sample Playback each Beat Slice pad plays its own
+// slice whether the audition voice is idle or still sounding.
+TEST(sample_playback_pads_play_their_own_slice) {
+    Harness h;
+    App& a = *h.app;
+    addWav(h, "loop.wav", 40000);
+    CHECK(a.importSample("loop.wav", 0));
+    a.setCurrentInstrument(0);
+    Instrument& in = a.instruments[0];
+    in.playMode = uint8_t(PlayMode::BeatSlice);
+    in.sliceCount = 4;
+    for (int k = 0; k < 4; ++k) in.slices[k] = uint16_t(k * 16384);
+    in.selectedSlice = 3;
+    h.tap(btn::SamplePlayback);
+    const uint32_t frames = a.engine.bank().frames(0);
+    auto sliceOf = [&](int32_t pos) { return pos < 0 ? -1 : int(int64_t(pos) * 4 / int64_t(frames)); };
+    auto head = [&](uint8_t pad) {
+        const int t = a.auditionTrack(pad);
+        return t < 0 ? -1 : sliceOf(a.engine.voice(t).playhead());
+    };
+    auto drain = [&] {
+        for (int i = 0; i < 4000; ++i) {
+            bool any = false;
+            for (int t = 0; t < 8; ++t) any = any || a.engine.voice(t).active();
+            if (!any) break;
+            h.audio.pump(1);
+        }
+    };
+    const uint8_t order[] = {3, 0, 2};
+    for (uint8_t p : order) {   // idle voice between presses
+        drain();
+        h.push(InputEvent::kPadDown, p);
+        CHECK_EQ(head(p), int(p));
+        CHECK_EQ(int(in.selectedSlice), int(p));
+        h.audio.pump(2);
+        CHECK_EQ(head(p), int(p));
+        h.push(InputEvent::kPadUp, p);
+    }
+    // Sounding voice: pad 2 is still releasing on the same track when pad 1 hits.
+    h.push(InputEvent::kPadDown, 1);
+    h.audio.pump(8);   // forced fade, then the deferred start
+    CHECK_EQ(head(1), 1);
+    CHECK_EQ(int(in.selectedSlice), 1);
+    h.push(InputEvent::kPadUp, 1);
+}
+
+// USER_REPORTS_R2 §1c: Sample Playback draws the auditioned voice's play
+// position (spec 05 §6, redraw every >= 5 ms) in every play mode.
+TEST(sample_playback_playhead) {
+    Harness h;
+    App& a = *h.app;
+    addWav(h, "long.wav", 40000);
+    CHECK(a.importSample("long.wav", 0));
+    a.setCurrentInstrument(0);
+    Instrument& in = a.instruments[0];
+    h.tap(btn::SamplePlayback);
+    auto* s = static_cast<PlaybackScreen*>(a.ui.screen(kModPlayback));
+    const uint32_t len = a.bank.frames(0);
+    auto expectX = [&](int32_t pos) {
+        const uint32_t m = uint32_t(uint64_t(pos) * 65535u / len);
+        return int(float(m) / 65535.0f * 599.0f + 0.5f);   // full view, kWaveX 0, 600 px
+    };
+    CHECK_EQ(s->drawnHeadX(), -1);
+    h.push(InputEvent::kPadDown, 0);
+    const int t = a.auditionTrack(0);
+    CHECK(t >= 0);
+    h.audio.pump(1);
+    h.run(40);   // >= 16 ms frame limit
+    const int32_t p1 = a.engine.voicePlayhead(t);
+    CHECK(p1 >= 0);
+    CHECK_EQ(s->drawnHeadX(), expectX(p1));
+    h.audio.pump(60);   // ~7700 frames later
+    h.run(40);   // >= 16 ms frame limit
+    const int32_t p2 = a.engine.voicePlayhead(t);
+    CHECK(p2 > p1 + 5000);
+    CHECK_EQ(s->drawnHeadX(), expectX(p2));
+    CHECK(s->drawnHeadX() > expectX(p1));
+    h.push(InputEvent::kPadUp, 0);
+    for (int i = 0; i < 4000 && a.engine.voice(t).active(); ++i) h.audio.pump(1);
+    h.audio.pump(1);
+    h.run(40);   // >= 16 ms frame limit
+    CHECK_EQ(a.engine.voicePlayhead(t), -1);
+    CHECK_EQ(s->drawnHeadX(), -1);
+    // Beat Slice: the line starts at the pad's slice.
+    in.playMode = uint8_t(PlayMode::BeatSlice);
+    in.sliceCount = 4;
+    for (int k = 0; k < 4; ++k) in.slices[k] = uint16_t(k * 16384);
+    h.tap(btn::SamplePlayback);
+    h.run(20);
+    h.push(InputEvent::kPadDown, 2);
+    h.audio.pump(1);
+    h.run(40);   // >= 16 ms frame limit
+    const int x = s->drawnHeadX();
+    CHECK(x >= 300 && x < 320);   // slice 2 starts at x ~300
+    h.push(InputEvent::kPadUp, 2);
+}
+
+// USER_REPORTS_R2 §4: while a song plays, Up/Down browse the song list; the
+// cursor re-joins the playing slot only when that slot changes.
+TEST(song_cursor_free_between_slot_changes) {
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Song);
+    SongScreen& s = *static_cast<SongScreen*>(a.ui.screen(kModSong));
+    h.tap(btn::Rec);
+    h.tap(btn::F4);
+    h.tap(btn::F4);
+    h.tap(btn::Rec);
+    CHECK_EQ(s.length(), 3);
+    CHECK(!s.edit);
+    s.cursor = 0;
+    h.tap(btn::Play);
+    CHECK(a.seq.isPlaying());
+    CHECK(a.seq.isSongMode());
+    auto playTo = [&](int slot) {
+        for (int i = 0; i < 20000 && a.seq.songPosition() != slot; ++i) h.audio.pump(1);
+        CHECK_EQ(a.seq.songPosition(), slot);
+        h.run(150);
+    };
+    h.run(150);
+    CHECK_EQ(s.cursor, 0);
+    playTo(1);
+    CHECK_EQ(s.cursor, 1);   // follows the new slot
+    h.tap(btn::Down);
+    CHECK_EQ(s.cursor, 2);
+    h.run(150);
+    h.audio.pump(10);
+    h.run(150);
+    CHECK_EQ(s.cursor, 2);   // stays while slot 1 keeps playing
+    h.tap(btn::Up);
+    h.tap(btn::Up);
+    h.run(300);
+    CHECK_EQ(s.cursor, 0);
+    CHECK_EQ(a.seq.songPosition(), 1);
+    playTo(2);
+    CHECK_EQ(s.cursor, 2);   // the next slot change pulls it back
+    CHECK(a.seq.isPlaying());
+    h.tap(btn::Play);
+}
