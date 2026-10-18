@@ -292,12 +292,16 @@ TEST(master_key_combination) {
 
 // spec 06 §4.4 meter law.
 TEST(mixer_meter_law) {
+    // log10 units: -3.6..+0.6 = -72..+12 dB.
+    auto lvl = [](float db) { return 0.71f * std::pow(10.0f, db / 20.0f); };
     CHECK_EQ(MixerScreen::meterBar(0.0f), 0);
-    CHECK_EQ(MixerScreen::meterBar(0.71f * std::pow(10.0f, -4.0f / 20.0f)), 0);
+    CHECK_EQ(MixerScreen::meterBar(lvl(-73.0f)), 0);
     CHECK_EQ(MixerScreen::meterBar(0.71f), 85);   // 0 dB: 3.6 / 4.2
-    CHECK_EQ(MixerScreen::meterBar(0.71f * std::pow(10.0f, -1.5f / 20.0f)), 50);
-    CHECK_EQ(MixerScreen::meterBar(0.71f * std::pow(10.0f, 0.7f / 20.0f)), 100);
-    CHECK_EQ(MixerScreen::meterBar(1.0f), 100);
+    CHECK_EQ(MixerScreen::meterBar(lvl(-30.0f)), 50);
+    CHECK_EQ(MixerScreen::meterBar(lvl(13.0f)), 100);
+    // Ordinary track levels move the meter (stock 1.9.2 photo, user report).
+    CHECK(MixerScreen::meterBar(lvl(-20.0f)) > 55 && MixerScreen::meterBar(lvl(-20.0f)) < 65);
+    CHECK(MixerScreen::meterBar(lvl(-35.0f)) > 0);
 
     Harness h;
     h.tap(btn::Master);

@@ -82,12 +82,24 @@ void columnFocus(Gfx& g, const Theme& th, int k) { wg::focusFrame(g, th, colX(k)
 // 31 / 59, bold font-4 name centred on 50 + 100 k; body panels from y 64.
 // Band and name in the title-bar colours: 080808 / white on Original,
 // b9b9ba / black on Monochrome [S round 3, snap 009 / 010].
+// Column header without its blended rows 31 / 59 (headerRows draws them).
 void header(Gfx& g, const Theme& th, int k, const char* text) {
     const uint32_t c = th.slot(slot::kTitle + 1);
     wg::panel(g, th, colX(k), 32, 96, 26, c, false);   // rows 32..58
-    wg::blendFill(g, colX(k), 31, 97, 1, c, wg::kEdgeA);
-    wg::blendFill(g, colX(k), 59, 97, 1, c, wg::kEdgeA);
     g.text(50 + 100 * k, 45, kFont4, th.slot(slot::kTitle), text, IDisplay::kOptCenter);   // ink y 40..51 [S]
+}
+// The blended rows 31 / 59 of headers 0..n-1 in one batch: nothing else
+// draws on those rows and the columns do not overlap, so the pixels are
+// the same as per header, in fewer display-list words.
+void headerRows(Gfx& g, const Theme& th, int n) {
+    g.alpha(wg::kEdgeA);
+    g.rectsBegin(th.slot(slot::kTitle + 1));
+    for (int k = 0; k < n; ++k) {
+        g.rectsAdd(colX(k), 31, 97, 1);
+        g.rectsAdd(colX(k), 59, 97, 1);
+    }
+    g.rectsEnd();
+    g.alpha(255);
 }
 void body(Gfx& g, const Theme& th, int x, int w) {
     const uint32_t c = th.slot(slot::kEmptyPanel + 1);
@@ -133,11 +145,15 @@ void MixerScreen::start(int opt) {
 }
 
 int MixerScreen::meterBar(float meanLevel) {
-    // spec 06 §4.4 level meter, steps 1-2 (0x35454).
+    // spec 06 §4.4 level meter, steps 1-2 (0x35454). The -3.6..+0.6 range is
+    // in log10 units (bels): -72..+12 dB, 0 dBFS at 86 % [I]. Read as dB it
+    // was a 4.2 dB window, so ordinary track levels (-10..-35 dB) never
+    // moved the meter; stock 1.9.2 shows them (user report, Track Mixer 2/3
+    // photo, matched by the bel range within ~10 % of the bar).
     constexpr float kLoDb = -3.6f, kHiDb = 0.6f;
     const float x = meanLevel / 0.71f;
     if (x <= 0.0f) return 0;
-    const float db = 20.0f * std::log10(x);
+    const float db = std::log10(x);
     if (db <= kLoDb) return 0;
     if (db >= kHiDb) return 100;
     return int((db - kLoDb) * 100.0f / (kHiDb - kLoDb));
@@ -645,11 +661,19 @@ void MixerScreen::draw(Gfx& g) {
             bar(g, th, x, 64, 47, 359, p.u8(pf::kTrackVolume + uint32_t(t)) / 100.0f,
                 a.trackMuted(t) ? off : wg::kThemeColour);
             bar(g, th, x + 50, 64, 47, 359, meter[t] / 100.0f, green);
-            if (meterHold[t] > meter[t]) {   // peak hold (spec 06 §4.4): a 1-px line [I]
-                const int y = 408 - int(334.0f * float(meterHold[t]) / 100.0f + 0.5f) + 1;
-                g.fill(x + 61, y, 26, 1, green);
-            }
         }
+        headerRows(g, th, 8);
+        // Peak hold (spec 06 §4.4): a 1-px line per meter [I], one batch
+        // after the columns (they do not overlap: same pixels, fewer words).
+        bool anyHold = false;
+        for (int t = 0; t < 8; ++t) {
+            if (meterHold[t] <= meter[t]) continue;
+            if (!anyHold) g.rectsBegin(green);
+            anyHold = true;
+            const int y = 408 - int(334.0f * float(meterHold[t]) / 100.0f + 0.5f) + 1;
+            g.rectsAdd(colX(t) + 61, y, 26, 1);
+        }
+        if (anyHold) g.rectsEnd();
         return;
     }
     // spec 06 §4.5 / VISUAL_DIFF §8.13: four channels, each a 32-px fader and
@@ -667,6 +691,7 @@ void MixerScreen::draw(Gfx& g) {
         bar(g, th, x + 32, 64, 32, 359, 0.0f, muted ? off : green);
         bar(g, th, x + 64, 64, 32, 359, 0.0f, muted ? off : green);
     }
+    headerRows(g, th, 4);
     wg::panel(g, th, 402, 30, 396, wg::kPanelH - 1);
 }
 
