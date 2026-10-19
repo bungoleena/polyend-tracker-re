@@ -164,6 +164,28 @@ TEST(fill_window_lists_and_labels) {
     h.tap(btn::F2);
     CHECK_EQ(p.fillField, 1);
     CHECK(std::string(a.ui.bar.label[1].top) == "Events");
+    // Left / Right move between the fields, skipping blank ones (user
+    // report: they changed the value like Up / Down).
+    const int where = p.fill[0].where;
+    h.tap(btn::Right);
+    CHECK_EQ(p.fillField, 2);
+    h.tap(btn::Right);
+    CHECK_EQ(p.fillField, 3);
+    p.fill[0].type = 0;   // constant: To blank
+    h.tap(btn::Right);
+    CHECK_EQ(p.fillField, 4);
+    h.tap(btn::Right);
+    CHECK_EQ(p.fillField, 4);   // last shown field
+    h.tap(btn::Left);
+    h.tap(btn::Left);
+    h.tap(btn::Left);
+    CHECK_EQ(p.fillField, 1);
+    CHECK_EQ(p.fill[0].where, where);   // values unchanged
+    p.fill[0].where = 0;               // no Where parameter: F2 blank
+    p.fillField = 3;
+    h.tap(btn::Left);
+    h.tap(btn::Left);
+    CHECK_EQ(p.fillField, 0);
     h.tap(btn::F7);
     // FX column: index 0 = None, -1 = Random FX; From/To shown as Fx text.
     p.col = 2;
