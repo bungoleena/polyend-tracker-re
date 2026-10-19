@@ -86,6 +86,18 @@ void Canvas::fillRect(int x0, int y0, int x1, int y1) {
         for (int x = x0; x < x1; ++x) blendPixel(x, y, 255);
 }
 
+void Canvas::fillRectAA(float x0, float y0, float x1, float y1) {
+    const int ix0 = std::max(int(std::floor(x0)), cx0_), iy0 = std::max(int(std::floor(y0)), cy0_);
+    const int ix1 = std::min(int(std::ceil(x1)), cx1_), iy1 = std::min(int(std::ceil(y1)), cy1_);
+    for (int y = iy0; y < iy1; ++y) {
+        const float cy = std::min(float(y + 1), y1) - std::max(float(y), y0);
+        for (int x = ix0; x < ix1; ++x) {
+            const float c = cy * (std::min(float(x + 1), x1) - std::max(float(x), x0));
+            if (c > 0.0f) blendPixel(x, y, c >= 1.0f ? 255u : uint32_t(c * 255.0f + 0.5f));
+        }
+    }
+}
+
 namespace {
 inline uint32_t coverage(float dist, float r) {
     // 1-px antialiased edge around radius r.

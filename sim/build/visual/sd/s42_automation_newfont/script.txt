@@ -1,5 +1,0 @@
-wait 300
-theme 2
-font 1
-tap INSTRPARAMS
-tap INSTRPARAMS

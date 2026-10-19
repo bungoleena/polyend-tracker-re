@@ -481,6 +481,8 @@ void PatternScreen::drawGridVertical(Gfx& g, bool threeTracks) {
     //     track within a pass (cells never overlap, so the order inside a
     //     pass is free): the VERTEX_TRANSLATE_X for x >= 512 then changes
     //     once per pass instead of twice per row.
+    auto luma = [](uint32_t c) { return 299 * ((c >> 16) & 255) + 587 * ((c >> 8) & 255) + 114 * (c & 255); };
+    const bool selWhite = luma(gc(th, kGcWhite)) > luma(gc(th, kGcBg));
     for (int pass = 0; pass < 6; ++pass) {
         const int c = pass < 4 ? pass : -1;
         uint32_t colour = c >= 0 ? gc(th, kGcNote + c) : gc(th, pass == 4 ? kGcMuted : kGcWhite);
@@ -495,7 +497,12 @@ void PatternScreen::drawGridVertical(Gfx& g, bool threeTracks) {
                 const bool inSel = hasSel && t >= sel.t0 && t <= sel.t1 && s >= sel.s0 && s <= sel.s1;
                 for (int k = 0; k < 4; ++k) {
                     if (!L.col[k].shown || colEmpty(st, k)) continue;
-                    const bool white = inSel || (r == kCursorRow && t == track && k == col && cursorShown);
+                    // Cursor cell: white on its fill. Block selection (an
+                    // outline only): white where the theme's [14] is lighter
+                    // than the grid background (Original); on the dark-text
+                    // themes the column colour, so the text stays readable [I].
+                    const bool cursorCell = r == kCursorRow && t == track && k == col && cursorShown;
+                    const bool white = cursorCell || (inSel && selWhite);
                     const int want = white ? 5 : (muted ? 4 : k);
                     if (want != pass) continue;
                     char txt[8];

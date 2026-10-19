@@ -1,3 +1,0 @@
-wait 300
-tap MASTER
-tap MASTER

@@ -37,6 +37,8 @@ public:
     void clearRect(uint32_t rgb);                          // fill clip, no blending
     void blendPixel(int x, int y, uint32_t cov);           // cov 0..255
     void fillRect(int x0, int y0, int x1, int y1);         // half-open
+    // Area [x0,x1) x [y0,y1) in float px; edge pixels blended by their coverage.
+    void fillRectAA(float x0, float y0, float x1, float y1);
     // Rectangle with rounded corners: area within r of [x0,x1]x[y0,y1] (float px).
     void fillRoundRect(float x0, float y0, float x1, float y1, float r);
     void fillCircle(float cx, float cy, float r);

@@ -270,6 +270,12 @@ void WavImporter::feed(const uint8_t* bytes, size_t n) {
     }
 }
 
+uint32_t WavImporter::availableFrames() const {
+    uint32_t a = rs_[0].produced();
+    if (plan_.outChannels == 2 && rs_[1].produced() < a) a = rs_[1].produced();
+    return a < plan_.outFrames ? a : plan_.outFrames;
+}
+
 uint32_t WavImporter::finish() {
     rs_[0].finish();
     if (plan_.outChannels == 2) rs_[1].finish();

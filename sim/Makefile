@@ -85,6 +85,10 @@ keyflow-check: $(BIN)
 	rm -rf $(OUT)/check-rec $(OUT)/check-rec.eeprom
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(BIN) --sd $(OUT)/check-rec --line-in-tone 440 \
 	    --script scripts/recorder_meter.txt
+	# Sample Playback playhead (USER_REPORTS_R2 1c).
+	rm -rf $(OUT)/check-head $(OUT)/check-head.eeprom
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy $(BIN) --sd $(OUT)/check-head \
+	    --script scripts/playhead.txt
 
 # Headless smoke test: boot the app on a scratch SD card and save screenshots,
 # then the visual-diff gate (report-only until the 1.9.5 screens land: remove

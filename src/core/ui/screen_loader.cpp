@@ -3,12 +3,178 @@
 #include <cstring>
 
 #include "app/app.h"
+#include "formats/instrument_pti.h"
 #include "formats/wav.h"
 #include "ui/screens.h"
 
 namespace ot {
 
 namespace {
+
+// SD Card list preview, streamed like stock (spec 06 §5.4, spec 07 Q7): the
+// sound starts after the first chunk and the rest is decoded into the free
+// tail of the sample bank while it plays; a file longer than the free memory
+// plays its first part. Main loop only.
+struct PreviewStream {
+    IStorage::Handle h = -1;
+    WavImporter imp;
+    const int16_t* data = nullptr;   // bank.tail() at the start: the decode target
+    uint32_t left = 0;   // data bytes still to read
+    bool on = false;
+    // .pti: raw 44.1 kHz int16 PCM at dataOff (spec 02 §6.3); planar stereo
+    // is read block by block from the L and R halves in step.
+    bool pti = false;
+    bool stereo = false;
+    uint32_t dataOff = 0, srcFrames = 0, total = 0, done = 0;
+};
+PreviewStream g_preview;
+PreviewStream& previewStream() { return g_preview; }
+
+void previewStreamStop(App& a) {
+    PreviewStream& p = previewStream();
+    if (p.h >= 0) a.fs().close(p.h);
+    p.h = -1;
+    p.on = false;
+}
+
+// Reads and decodes up to `budget` data bytes, then tells the player how far
+// it may go.
+void previewStreamPump(App& a, uint32_t budget) {
+    PreviewStream& p = previewStream();
+    if (!p.on) return;
+    if (p.pti) {
+        if (!a.engine.previewBufferActive() || a.bank.tail() > p.data) {
+            previewStreamStop(a);
+            return;
+        }
+        int16_t* dst = const_cast<int16_t*>(p.data);
+        while (p.done < p.total && budget) {
+            uint32_t n = p.total - p.done;
+            const uint32_t maxN = budget / (p.stereo ? 4u : 2u);
+            if (n > 1024) n = 1024;
+            if (n > maxN) n = maxN ? maxN : 1;
+            bool ok = a.fs().seek(p.h, p.dataOff + p.done * 2) &&
+                      a.fs().read(p.h, dst + p.done, n * 2) == int32_t(n * 2);
+            if (ok && p.stereo)
+                ok = a.fs().seek(p.h, p.dataOff + (p.srcFrames + p.done) * 2) &&
+                     a.fs().read(p.h, dst + p.total + p.done, n * 2) == int32_t(n * 2);
+            if (!ok) {
+                p.total = p.done;   // short file: play what was read
+                break;
+            }
+            p.done += n;
+            budget = budget > n * (p.stereo ? 4u : 2u) ? budget - n * (p.stereo ? 4u : 2u) : 0;
+        }
+        a.engine.previewAvail(p.done);
+        if (p.done >= p.total) previewStreamStop(a);
+        return;
+    }
+    // The decode target is free memory only while the preview plays and no
+    // instrument has grown the bank into it (load, replace, trim): stop
+    // otherwise, never write into instrument data.
+    if (!a.engine.previewBufferActive() || a.bank.tail() > p.data) {
+        previewStreamStop(a);
+        return;
+    }
+    uint8_t buf[2048];
+    while (p.left && budget) {
+        uint32_t want = p.left < sizeof(buf) ? p.left : uint32_t(sizeof(buf));
+        if (want > budget) want = budget;
+        const int32_t got = a.fs().read(p.h, buf, want);
+        if (got <= 0) {
+            p.left = 0;
+            break;
+        }
+        p.imp.feed(buf, size_t(got));
+        p.left -= uint32_t(got);
+        budget -= uint32_t(got);
+    }
+    if (!p.left) {
+        p.imp.finish();
+        a.engine.previewAvail(p.imp.plan().outFrames);
+        previewStreamStop(a);
+        return;
+    }
+    a.engine.previewAvail(p.imp.availableFrames());
+}
+
+// .pti on the SD Card list: the payload of the instrument file (stock
+// previews it like a WAV, spec 06 §5.4).
+bool previewPtiStart(App& a, const char* path) {
+    previewStreamStop(a);
+    PreviewStream& p = previewStream();
+    p.h = a.fs().open(path, IStorage::kRead);
+    if (p.h < 0) return false;
+    uint8_t hdr[pti::kHeaderBlockSize];
+    const int32_t size = a.fs().size(p.h);
+    Instrument ins;
+    PtiLoadInfo info;
+    bool ok = a.fs().read(p.h, hdr, sizeof(hdr)) == int32_t(sizeof(hdr)) &&
+              decodePtiHeader(hdr, sizeof(hdr), ins, &info) == FmtStatus::Ok && size > int32_t(info.dataOffset);
+    if (ok) {
+        const PtiSampleLayout lay = resolvePtiSample(ins.lengthFrames, uint32_t(size) - info.dataOffset, true);
+        const size_t cap = a.bank.freeSamples();
+        p.stereo = lay.useStereo;
+        p.srcFrames = lay.frames;
+        p.dataOff = info.dataOffset;
+        const size_t fit = cap / (p.stereo ? 2u : 1u);
+        p.total = uint32_t(lay.frames < fit ? lay.frames : fit);   // longer than the memory: the first part
+        p.done = 0;
+        ok = p.total > 0;
+    }
+    if (!ok) {
+        previewStreamStop(a);
+        return false;
+    }
+    p.pti = true;
+    p.on = true;
+    p.data = a.bank.tail();
+    a.engine.previewBuffer(p.data, p.total, p.stereo, 0);
+    previewStreamPump(a, 16 * 1024);
+    return true;
+}
+
+bool previewStreamStart(App& a, const char* path) {
+    previewStreamStop(a);
+    PreviewStream& p = previewStream();
+    p.pti = false;
+    p.h = a.fs().open(path, IStorage::kRead);
+    if (p.h < 0) return false;
+    WavInfo info;
+    StorageReader r(a.fs(), p.h);
+    WavImportOptions opt;
+    opt.stereo = true;   // the SD streamer plays stereo files in stereo (spec 07 Q1)
+    const size_t cap = a.bank.freeSamples();
+    bool ok = wavParseHeader(r, info) && wavIsSupported(info);
+    if (ok) {
+        // Longer than the free memory: preview the part that fits [OT].
+        const WavImportPlan full = wavPlanImport(info, opt);
+        const uint64_t need = uint64_t(full.outFrames) * full.outChannels;
+        if (need > cap && need > 0) {
+            const uint64_t m = 65535ull * cap / need;
+            opt.endMarker = uint16_t(m > 1 ? m - 1 : 1);
+            // Marker rounding: step down until the plan fits.
+            for (int i = 0; i < 16 && opt.endMarker > 1; ++i) {
+                const WavImportPlan t = wavPlanImport(info, opt);
+                if (uint64_t(t.outFrames) * t.outChannels <= cap) break;
+                --opt.endMarker;
+            }
+        }
+        ok = p.imp.begin(info, opt, a.bank.tail(), cap) == FmtStatus::Ok && p.imp.plan().outFrames > 0;
+    }
+    if (!ok) {
+        previewStreamStop(a);
+        return false;
+    }
+    p.left = info.dataSize;
+    p.on = true;
+    // The player starts with nothing decoded (silence, never undecoded
+    // memory); the first chunk follows at once.
+    p.data = a.bank.tail();
+    a.engine.previewBuffer(p.data, p.imp.plan().outFrames, p.imp.plan().outChannels == 2, 0);
+    previewStreamPump(a, 16 * 1024);
+    return true;
+}
 int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 bool hasExt(const char* s, const char* ext) {
@@ -124,6 +290,7 @@ void LoaderScreen::start(int opt) {
 }
 
 void LoaderScreen::stop() {
+    previewStreamStop(app_);
     trimPlaying_ = false;
     app_.previewAllOff();
     previewing_ = false;
@@ -444,18 +611,15 @@ void LoaderScreen::onButton(uint8_t id, uint8_t state) {
                     a.previewOn(App::kAuditionLoader, uint8_t(insCursor), 60, 127);
                     previewing_ = true;
                 } else if (fcs == 0 && count > 0 && !isDir[sdCursor]) {
-                    // Decode into the free tail of the sample bank and play it.
+                    // Streamed into the free tail of the sample bank.
                     char path[256];
                     entryPath(sdCursor, path, sizeof(path));
-                    WavImportResult res;
-                    WavImportOptions opt;
-                    opt.stereo = true;   // the SD streamer plays stereo files in stereo (spec 07 Q1)
-                    if (hasExt(path, ".wav") &&
-                        wavImportFile(a.fs(), path, opt, a.bank.tail(), uint32_t(a.bank.freeSamples()), res) == FmtStatus::Ok)
-                        a.previewFile(a.bank.tail(), res.frames, res.stereo);
+                    if (hasExt(path, ".wav")) previewStreamStart(a, path);
+                    else if (hasExt(path, ".pti")) previewPtiStart(a, path);
                     previewing_ = true;
                 }
             } else if (state == kRelease) {
+                previewStreamStop(a);
                 a.previewAllOff();
                 previewing_ = false;
             }
@@ -617,6 +781,9 @@ void LoaderScreen::onEncoder(int d) {
 }
 
 void LoaderScreen::update(uint32_t now) {
+    // SD preview: decode ahead of the player (32 KB per pass, about 0.2 s
+    // of stereo audio; the player waits if it ever catches up).
+    previewStreamPump(app_, 32 * 1024);
     if (trim && trimPlaying_ && now - trimPlayAt_ >= trimElapsed_ + 11) {
         // §5.5: the playhead advances every >= 11 ms; playback stops at End.
         trimElapsed_ = now - trimPlayAt_;

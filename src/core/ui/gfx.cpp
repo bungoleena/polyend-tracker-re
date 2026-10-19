@@ -231,8 +231,9 @@ void Gfx::rectsAdd(int x, int y, int w, int h) {
     if (!rectsOpen_) return;
     if (w > 0 && h > 0 && (x >= kScreenW || y >= kScreenH || x + w <= 0 || y + h <= 0)) return;
     if (!admit(2)) return;
-    d_.vertex2f(int32_t(x) * 16, int32_t(y) * 16);
-    d_.vertex2f(int32_t(x + w - 1) * 16, int32_t(y + h - 1) * 16);
+    // Pixel-centre vertices (IDisplay::rect): crisp edges on the FT81x.
+    d_.vertex2f(int32_t(x) * 16 + 8, int32_t(y) * 16 + 8);
+    d_.vertex2f(int32_t(x + w - 1) * 16 + 8, int32_t(y + h - 1) * 16 + 8);
     words_ += 2;
 }
 

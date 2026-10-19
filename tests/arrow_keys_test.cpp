@@ -80,6 +80,13 @@ TEST(arrow_and_list_direction_table) {
         };
     };
     auto category = [](Harness& h) { return scr<ConfigScreen>(h, kModConfig).category; };
+    auto playModeList = [](Harness& h) {
+        addSample(h);
+        h.tap(btn::SamplePlayback);
+        scr<PlaybackScreen>(h, kModPlayback).sel = 6;
+        h.app->instruments[h.app->currentInstrument()].playMode = 2;
+    };
+    auto playMode = [](Harness& h) { return int(h.app->instruments[h.app->currentInstrument()].playMode); };
 
     const std::vector<Row> rows = {
         // Sample Editor effect list (spec 06 §6.3): Up = previous, Down = next,
@@ -107,6 +114,11 @@ TEST(arrow_and_list_direction_table) {
         {"config Up", config(2), btn::Up, category, 1},
         {"config Down", config(2), btn::Down, category, 3},
         {"config enc+", config(2), kEnc, category, 3},
+        // Sample Playback Play mode list (user report 2.0.5): drawn top to
+        // bottom, Up = the mode above, Down = the mode below, encoder + = below.
+        {"playback mode list Up", playModeList, btn::Up, playMode, 1},
+        {"playback mode list Down", playModeList, btn::Down, playMode, 3},
+        {"playback mode list enc+", playModeList, kEnc, playMode, 3},
     };
     for (const Row& r : rows) {
         Harness h;

@@ -332,15 +332,18 @@ void AudioEngine::midiSend(uint8_t portMask, const uint8_t* bytes, uint8_t len) 
     routeMidi(*midi_, portMask, bytes, len);
 }
 
-void AudioEngine::previewBuffer(const int16_t* data, uint32_t frames, bool stereo) {
+void AudioEngine::previewBuffer(const int16_t* data, uint32_t frames, bool stereo, uint32_t avail) {
     raw_.active = false;
     if (!data || !frames) return;
     raw_.data = data;
     raw_.frames = frames;
+    raw_.avail = avail < frames ? avail : frames;   // set before active
     raw_.stereo = stereo;
     raw_.pos = 0;
     raw_.active = true;
 }
+
+void AudioEngine::previewAvail(uint32_t frames) { raw_.avail = frames < raw_.frames ? frames : raw_.frames; }
 
 void AudioEngine::previewStop() { raw_.active = false; }
 
@@ -595,13 +598,16 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
         const int16_t* d = raw_.data;
         const uint32_t len = raw_.frames;
         uint32_t pos = raw_.pos;
+        const uint32_t lim = raw_.avail;   // streamed: wait (silence) at the decoded end
         OT_SDRAM_ACCESS(raw_.stereo ? 2 * kBlock : kBlock);
-        for (uint32_t i = 0; i < kBlock; ++i, ++pos) {
-            if (pos < len) {
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            if (pos < lim) {
                 rawL[i] = float(d[pos]) * g;
                 rawR[i] = raw_.stereo ? float(d[len + pos]) * g : rawL[i];
+                ++pos;
             } else {
                 rawL[i] = rawR[i] = 0.0f;
+                if (lim >= len) ++pos;
             }
         }
         raw_.pos = pos;

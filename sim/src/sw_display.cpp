@@ -229,10 +229,10 @@ void SwDisplay::vertex(float x, float y, uint8_t handle, uint8_t cell, bool ii) 
             back_.fillCircle(x, y, float(pointS_) / 16.0f);
             break;
         case kLines:
-            if (nvert_ & 1) back_.fillCapsule(vx_ + 0.5f, vy_ + 0.5f, x + 0.5f, y + 0.5f, lr > 0.5f ? lr - 0.5f : 0.5f);
+            if (nvert_ & 1) back_.fillCapsule(vx_, vy_, x, y, lr > 0.5f ? lr - 0.5f : 0.5f);
             break;
         case kLineStrip:
-            if (nvert_) back_.fillCapsule(vx_ + 0.5f, vy_ + 0.5f, x + 0.5f, y + 0.5f, lr > 0.5f ? lr - 0.5f : 0.5f);
+            if (nvert_) back_.fillCapsule(vx_, vy_, x, y, lr > 0.5f ? lr - 0.5f : 0.5f);
             break;
         case kEdgeStripR:
         case kEdgeStripL:
@@ -242,13 +242,16 @@ void SwDisplay::vertex(float x, float y, uint8_t handle, uint8_t cell, bool ii) 
             break;
         case kRects:
             if (nvert_ & 1) {
-                // Corners are rounded by LINE_WIDTH; at the default width (16)
-                // the rectangle covers x0..x1 / y0..y1 inclusive.
+                // FT81x: the area within LINE_WIDTH / 2 of the vertex box,
+                // anti-aliased, vertices in continuous pixel coordinates
+                // (pixel k spans [k, k+1)). Pixel-centre vertices (k + 0.5,
+                // IDisplay::rect) give crisp edges; corner vertices half-cover
+                // every edge pixel, as on the device.
                 float x0 = vx_, y0 = vy_, x1 = x, y1 = y;
                 if (x1 < x0) std::swap(x0, x1);
                 if (y1 < y0) std::swap(y0, y1);
-                if (lineW_ <= 16) back_.fillRect(int(x0 + 0.5f), int(y0 + 0.5f), int(x1 + 0.5f) + 1, int(y1 + 0.5f) + 1);
-                else back_.fillRoundRect(x0 + 0.5f, y0 + 0.5f, x1 + 0.5f, y1 + 0.5f, lr - 0.5f);
+                if (lineW_ <= 16) back_.fillRectAA(x0 - 0.5f, y0 - 0.5f, x1 + 0.5f, y1 + 0.5f);
+                else back_.fillRoundRect(x0, y0, x1, y1, lr - 0.5f);
             }
             break;
         default:

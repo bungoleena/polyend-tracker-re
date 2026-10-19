@@ -1509,7 +1509,8 @@ void PatternScreen::padLeds(uint8_t* lv) {
     if (edit()) {
         if (col == 0) {
             const uint8_t ci = a.currentInstrument();
-            if (ci < kSampleInstrumentCount && a.instruments[ci].playMode == uint8_t(PlayMode::Slice)) {
+            if (ci < kSampleInstrumentCount && (a.instruments[ci].playMode == uint8_t(PlayMode::Slice) ||
+                                                a.instruments[ci].playMode == uint8_t(PlayMode::BeatSlice))) {
                 for (int p = 0; p < a.instruments[ci].sliceCount && p < 48; ++p) lv[p] = dim;
                 if (st.note >= 24 && st.note < 72) lv[st.note - 24] = full;
             } else if (st.note >= 0) {

@@ -610,8 +610,15 @@ void PlaybackScreen::onButton(uint8_t id, uint8_t state) {
             // Point modes (0x5351c) are not decoded (appendix B open item).
             if (slice && (sel == 0 || sel == 1)) removeSlice();
             break;
-        case btn::Up: change(1); break;
-        case btn::Down: change(-1); break;
+        case btn::Up:
+        case btn::Down: {
+            // The Play mode list (sel 6) is drawn top to bottom: Up = the
+            // item above, Down = the item below, like the encoder (+ = next
+            // item down) [S owner test on 1.9.2]. Values: Up = higher.
+            const int d = id == btn::Up ? 1 : -1;
+            change(sel == 6 ? -d : d);
+            break;
+        }
         case btn::Left:
         case btn::Right: {
             // Visible parameters per mode (jump table 0x52120).

@@ -185,9 +185,15 @@ public:
     // played once at MixerSettings::previewVolume, stereo files in stereo
     // (spec 07 Q1); nullptr stops it. The buffer must stay valid while
     // playing (stopAll() also stops it).
-    void previewBuffer(const int16_t* data, uint32_t frames, bool stereo);
+    // `avail`: frames already decoded (streamed preview), default all.
+    void previewBuffer(const int16_t* data, uint32_t frames, bool stereo, uint32_t avail = 0xFFFFFFFFu);
     bool previewBufferActive() const { return raw_.active; }
+    uint32_t previewBufferAvail() const { return raw_.avail; }
     void previewStop();   // file preview, immediately
+    // Streamed file preview: previewBuffer(data, total, stereo) with only
+    // `frames` decoded so far; the player waits (silence) at that point and
+    // continues as more frames arrive.
+    void previewAvail(uint32_t frames);
     // Sequencer transport for tempo-locked LFOs (spec 07 Q5): returns true
     // while the sequencer plays and reports its tick counter (576 per step)
     // and the track-0 step index. Called from the audio-block context.
@@ -272,6 +278,7 @@ private:
         volatile bool active = false;
         const int16_t* data = nullptr;
         uint32_t frames = 0, pos = 0;
+        volatile uint32_t avail = 0;   // frames decoded so far (streamed preview)
         bool stereo = false;
     } raw_;
     volatile float peak_[kVoices] = {};

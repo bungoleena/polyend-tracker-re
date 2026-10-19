@@ -42,11 +42,12 @@ TEST(display_helpers) {
     d.line(-1, 0, 5, 6);
     CHECK_EQ(d.log.size(), size_t(8));
     CHECK(d.log[0] == "begin 9");
-    CHECK(d.log[1] == "v 16,32");
-    CHECK(d.log[2] == "v 480,640");
+    // Pixel-centre vertices (+8/16): crisp FT81x RECTS / LINES edges.
+    CHECK(d.log[1] == "v 24,40");
+    CHECK(d.log[2] == "v 488,648");
     CHECK(d.log[3] == "end");
     CHECK(d.log[4] == "begin 3");
-    CHECK(d.log[5] == "v -16,0");
+    CHECK(d.log[5] == "v -8,8");
     CHECK_EQ(int(IDisplay::kOptCenter), int(IDisplay::kOptCenterX | IDisplay::kOptCenterY));
 }
 

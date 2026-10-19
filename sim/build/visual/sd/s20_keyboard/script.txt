@@ -1,9 +1,0 @@
-wait 300
-press F1
-enc -8
-release F1
-tap RIGHT
-tap RIGHT
-tap F8
-tap F8
-tap F1

@@ -1,3 +1,0 @@
-wait 300
-theme 2
-tap PATTERN

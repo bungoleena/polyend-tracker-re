@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "formats/wav.h"
 #include "canvas.h"
 #include "host_hal.h"
 #include "host_midi.h"
@@ -457,6 +458,43 @@ struct Headless {
                 if (!s || want != s->name()) {
                     std::fprintf(stderr, "script:%d: screen is \"%s\", want \"%s\"\n", line, s ? s->name() : "",
                                  want.c_str());
+                    return false;
+                }
+            } else if (cmd == "tone-sample") {
+                // tone-sample SLOT FRAMES: write a 220 Hz decaying-saw WAV to the
+                // SD card and import it into instrument SLOT (1-based), which
+                // becomes the current instrument; playhead / slice scripts.
+                bool ok = false;
+                if (m.app && n1 >= 1 && n1 <= ot::kSampleInstrumentCount) {
+                    const uint32_t frames = uint32_t(std::atol(a2.c_str()) > 0 ? std::atol(a2.c_str()) : 44100);
+                    std::vector<int16_t> pcm(frames);
+                    for (uint32_t i = 0; i < frames; ++i)
+                        pcm[i] = int16_t(20000.0f * (1.0f - float(i) / float(frames)) * (float(i % 200) / 100.0f - 1.0f));
+                    std::vector<uint8_t> wav(frames * 2 + 64);
+                    wav.resize(ot::wavEncode(pcm.data(), frames, 1, wav.data(), wav.size()));
+                    const ot::IStorage::Handle h = m.storage.open("simtone.wav", ot::IStorage::kWrite);
+                    if (h >= 0) {
+                        ok = m.storage.write(h, wav.data(), uint32_t(wav.size())) == int32_t(wav.size());
+                        m.storage.close(h);
+                    }
+                    ok = ok && m.app->importSample("simtone.wav", int(n1 - 1));
+                    if (ok) m.app->setCurrentInstrument(uint8_t(n1 - 1));
+                }
+                if (!ok) {
+                    std::fprintf(stderr, "script:%d: tone-sample failed\n", line);
+                    return false;
+                }
+                advance(1);
+            } else if (cmd == "expect-playhead") {
+                // expect-playhead on|off: Sample Playback shows (or not) the
+                // play-position line (USER_REPORTS_R2 §1c).
+                const auto* pb = m.app && m.app->ui.active() == ot::kModPlayback
+                                     ? static_cast<const ot::PlaybackScreen*>(m.app->ui.current())
+                                     : nullptr;
+                const int x = pb ? pb->drawnHeadX() : -1;
+                std::fprintf(stderr, "playhead x %d\n", x);
+                if (!pb || (a1 == "on") != (x >= 0)) {
+                    std::fprintf(stderr, "script:%d: playhead x %d, want %s\n", line, x, a1.c_str());
                     return false;
                 }
             } else if (cmd == "expect-master") {

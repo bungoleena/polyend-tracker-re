@@ -234,16 +234,21 @@ public:
     virtual void bitmapSize(uint8_t handle, uint16_t w, uint16_t h) { (void)handle; (void)w; (void)h; }
 
     // --- convenience helpers built on the primitives ---------------------
+    // RECTS / LINES vertices go at pixel centres (+8/16): the FT81x draws a
+    // RECTS (LINE_WIDTH 16) from 0.5 px before the first vertex to 0.5 px
+    // after the second, anti-aliased, so corner vertices would leave every
+    // edge half-covered (dim 1-px dashes and dividers on the device,
+    // Snapshot_014 vs stock Snapshot_013). Pixels x0..x1 / y0..y1 inclusive.
     void rect(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
         begin(kRects);
-        vertex2f(int32_t(x0) * 16, int32_t(y0) * 16);
-        vertex2f(int32_t(x1) * 16, int32_t(y1) * 16);
+        vertex2f(int32_t(x0) * 16 + 8, int32_t(y0) * 16 + 8);
+        vertex2f(int32_t(x1) * 16 + 8, int32_t(y1) * 16 + 8);
         end();
     }
     void line(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
         begin(kLines);
-        vertex2f(int32_t(x0) * 16, int32_t(y0) * 16);
-        vertex2f(int32_t(x1) * 16, int32_t(y1) * 16);
+        vertex2f(int32_t(x0) * 16 + 8, int32_t(y0) * 16 + 8);
+        vertex2f(int32_t(x1) * 16 + 8, int32_t(y1) * 16 + 8);
         end();
     }
 };

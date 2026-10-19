@@ -1,6 +1,0 @@
-wait 300
-tap REC
-tap DOWN
-tap DOWN
-tap FX1
-press SHIFT

@@ -1,3 +1,0 @@
-wait 300
-tap FILE
-tap F7

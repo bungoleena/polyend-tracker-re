@@ -11,6 +11,7 @@
 
 #include "app/auto_slice.h"
 #include "audio/zero_snap.h"
+#include "formats/instrument_pti.h"
 #include "formats/wav.h"
 #include "ui/screens.h"
 
@@ -476,3 +477,115 @@ TEST(instrument_encpush_beat_slice_note_and_reset) {
 }
 
 
+
+// SD Card list Preview streams the file (user report 2.0.5: 30 s / 60 s files
+// were silent): sound starts after the first chunk while the rest decodes,
+// and a file longer than the free sample memory plays the part that fits.
+namespace {
+void putWavCh(Harness& h, const char* path, const std::vector<int16_t>& s, uint16_t ch) {
+    std::vector<uint8_t> out(s.size() * 2 + 64);
+    out.resize(wavEncode(s.data(), uint32_t(s.size() / ch), ch, out.data(), out.size()));
+    h.fs.files[path] = out;
+}
+int selectSd(Harness& h, const char* name) {
+    LoaderScreen& l = ld(h);
+    int idx = -1;
+    for (int i = 0; i < l.count; ++i)
+        if (!std::strcmp(l.entries[i], name)) idx = i;
+    while (idx >= 0 && l.sdCursor < idx) h.tap(btn::Down);
+    return idx;
+}
+}  // namespace
+
+TEST(loader_sd_preview_streams_long_files) {
+    for (int k = 0; k < 3; ++k) {
+        const bool fits = k != 1;
+        const uint16_t ch = k == 2 ? 2 : 1;
+        Harness h(true, 300000);   // 300000 samples of sample memory
+        App& a = *h.app;
+        std::vector<int16_t> s(fits ? 250000 : 600000);
+        for (size_t i = 0; i < s.size(); ++i) s[i] = int16_t((i % 100) * 200 - 10000);
+        putWavCh(h, "long.wav", s, ch);
+        const uint32_t frames = uint32_t(s.size() / ch);
+        h.tap(btn::SampleLoader);
+        CHECK(selectSd(h, "long.wav") >= 0);
+        h.down(btn::F3);
+        CHECK(a.engine.previewBufferActive());
+        const uint32_t first = a.engine.previewBufferAvail();
+        CHECK(first > 0 && first < frames);   // playing before the decode is done
+        CHECK(h.audio.pump(4) > 1000);        // sounds at once
+        h.run(200);                           // decodes ahead while it plays
+        CHECK(a.engine.previewBufferAvail() > first);
+        CHECK(h.audio.pump(40) > 1000);
+        CHECK(a.engine.previewBufferActive());
+        h.up(btn::F3);
+        CHECK(!a.engine.previewBufferActive());
+        CHECK(a.bank.freeSamples() == 300000u);   // the preview never claims the memory
+    }
+}
+
+// Replacing an instrument while a preview streams moves the instruments
+// above it into the old free area: the stream stops before it could write
+// over them (Fable review).
+TEST(loader_sd_preview_stops_when_the_bank_grows) {
+    Harness h(true, 3000000);
+    App& a = *h.app;
+    std::vector<int16_t> big(2500000, 7000), a0(20000), b1(20000), c0(400000);
+    for (size_t i = 0; i < a0.size(); ++i) a0[i] = int16_t(100 + i % 7);
+    for (size_t i = 0; i < b1.size(); ++i) b1[i] = int16_t(-300 - int(i % 11));
+    for (size_t i = 0; i < c0.size(); ++i) c0[i] = int16_t(50 + i % 13);
+    putWav(h, "big.wav", big);
+    putWav(h, "a0.wav", a0);
+    putWav(h, "b1.wav", b1);
+    putWav(h, "c0.wav", c0);
+    CHECK(a.importSample("a0.wav", 0));
+    CHECK(a.importSample("b1.wav", 1));
+    h.tap(btn::SampleLoader);
+    CHECK(selectSd(h, "big.wav") >= 0);
+    h.down(btn::F3);
+    CHECK(a.engine.previewBufferActive());
+    CHECK(a.engine.previewBufferAvail() < big.size());   // still streaming
+    CHECK(a.importSample("c0.wav", 0));   // slot 1 moves up into the old free area
+    h.run(300);
+    const int16_t* d = a.bank.data(1);
+    bool same = d != nullptr && a.bank.frames(1) == b1.size();
+    for (size_t i = 0; same && i < b1.size(); ++i) same = d[i] == b1[i];
+    CHECK(same);
+    h.up(btn::F3);
+}
+
+// .pti files on the SD Card list preview too (user report): the payload
+// streams like a WAV; planar stereo keeps both halves.
+TEST(loader_sd_preview_plays_pti) {
+    for (const bool stereo : {false, true}) {
+        Harness h(true, 1000000);
+        App& a = *h.app;
+        const uint32_t n = 200000;
+        std::vector<int16_t> l(n), r(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            l[i] = int16_t((i % 100) * 200 - 10000);
+            r[i] = int16_t(-(int(i % 70) * 250) + 8000);
+        }
+        Instrument ins;
+        ins.lengthFrames = n;
+        ins.stereo = stereo;
+        std::vector<uint8_t> f(ptiFileSize(n, stereo));
+        f.resize(encodePti(ins, l.data(), stereo ? r.data() : nullptr, f.data(), f.size()));
+        CHECK(!f.empty());
+        h.fs.files["inst.pti"] = f;
+        h.tap(btn::SampleLoader);
+        CHECK(selectSd(h, "inst.pti") >= 0);
+        const int16_t* tail = a.bank.tail();
+        h.down(btn::F3);
+        CHECK(a.engine.previewBufferActive());
+        CHECK(a.engine.previewBufferAvail() > 0 && a.engine.previewBufferAvail() < n);   // streaming
+        CHECK(h.audio.pump(4) > 1000);
+        h.run(300);
+        CHECK(a.engine.previewBufferAvail() == n);
+        bool same = true;
+        for (uint32_t i = 0; same && i < n; ++i) same = tail[i] == l[i] && (!stereo || tail[n + i] == r[i]);
+        CHECK(same);
+        h.up(btn::F3);
+        CHECK(!a.engine.previewBufferActive());
+    }
+}

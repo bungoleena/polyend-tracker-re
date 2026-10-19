@@ -1,5 +1,0 @@
-wait 300
-tap FILE
-tap F2
-tap DOWN
-tap DOWN
