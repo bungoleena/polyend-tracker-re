@@ -13,6 +13,7 @@
 #include "formats/crc32.h"
 #include "ui/fonts/fonts.h"
 #include "ui/gfx.h"
+#include "ui/widgets.h"
 
 using namespace ot;
 namespace fd = ot::fontdata;
@@ -347,4 +348,20 @@ TEST(packed_advances_match_image) {
         for (int role = 0; role < 5; ++role)
             for (int ch = 0; ch < 128; ++ch)
                 CHECK_EQ(adv[set * 5 + role][ch], fd::kBlob[fd::info(set, role).metric + uint32_t(ch)]);
+}
+
+TEST(cpu_cell_label_and_value_do_not_touch_with_custom_fonts) {
+    // Device photo: with the custom (wider) font 4 the label was clamped into
+    // the 60-px cell and ran into the value ("CPU29%0m:13s"). The cell grows
+    // with the text: "CPU" + a space + "nn%" fit before the play time.
+    FontDisplay d;
+    CHECK(applyFontSet(&d, 0));
+    const int w = textWidth(kFont4, "CPU 00%");
+    CHECK(wg::cpuCellWidth() >= w);
+    wg::CpuCell c = wg::cpuCell(1, true, 290, false, false);
+    c.right = int16_t(wg::cpuCellRight(13));
+    // Label start + "CPU" + " " ends at or before the value's start.
+    const int labelEnd = c.right - textWidth(kFont4, "00%") - textWidth(kFont4, " ");
+    CHECK(labelEnd - textWidth(kFont4, "CPU") >= c.right - wg::cpuCellWidth());
+    applyFontSet(nullptr, 0);
 }

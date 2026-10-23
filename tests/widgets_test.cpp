@@ -632,12 +632,16 @@ TEST(cpu_cell_title_geometry_and_words) {
     st.cpu = wg::cpuCell(1, true, 452, false, false);
     st.cpu.right = int16_t(wg::cpuCellRight(st.seconds));
     CHECK_EQ(st.cpu.right, 296);
-    CHECK_EQ(wg::titleClipWidth(&st.cpu), 217);
+    // The cell is as wide as "CPU 00%" (>= 60 px): the clip ends 10 px before it.
+    const int clipW = 296 - wg::cpuCellWidth() - 10 - 9;
+    CHECK_EQ(wg::titleClipWidth(&st.cpu), clipW);
+    char clipLine[32];
+    std::snprintf(clipLine, sizeof(clipLine), "SCISSOR_SIZE %d 27", clipW);
     auto dl = frame([&](Gfx& g) { wg::titleBar(g, O(), "Pattern 10", "5. Bass02", &st); });
-    CHECK(hasLine(dl, "SCISSOR_SIZE 217 27"));
+    CHECK(hasLine(dl, clipLine));
     // Glyphs: "CPU" then "45%", all inside x 236..296.
     int glyphs = 0, minX = 9999, maxX = 0;
-    const int lo = 296 - wg::kCpuCellW;
+    const int lo = 296 - wg::cpuCellWidth();
     for (const std::string& l : dl) {
         unsigned x, y, h, c;
         if (std::sscanf(l.c_str(), "VERTEX2II %u %u %u %u", &x, &y, &h, &c) == 4 && int(x) >= lo && int(x) < 296) {
@@ -681,7 +685,8 @@ TEST(cpu_cell_title_geometry_and_words) {
         wg::titleBarChrome(g, O(), "Pattern 10", "5. Bass02", true, &st.cpu);
         wg::titleBarStatus(g, O(), st);
     });
-    CHECK(hasLine(split, "SCISSOR_SIZE 217 27"));
+    CHECK(hasLine(split, clipLine));
     d.customFonts = false;
     applyFontSet(nullptr, 0);
 }
+

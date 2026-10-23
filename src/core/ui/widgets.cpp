@@ -217,9 +217,17 @@ uint32_t cpuCellColour(const Theme& th, CpuLevel level) {
 
 int cpuCellRight(uint32_t seconds) { return statusLayout(seconds).timeX - kCpuCellGap; }
 
+// Cell width: kCpuCellW, or wider when "CPU 00%" needs it in the bound font
+// set (the custom font 4 is wider than the ROM font: the label was clamped
+// into 60 px and ran into the value, "CPU29%", on the device; user photo).
+int cpuCellWidth() {
+    const int w = textWidth(kFont4, "CPU 00%");
+    return w > kCpuCellW ? w : kCpuCellW;
+}
+
 int titleClipWidth(const CpuCell* cell) {
     if (!cell || !cell->shown()) return kTitleClipW;
-    const int w = cell->right - kCpuCellW - kCpuTitleGap - kTitleTextX;
+    const int w = cell->right - cpuCellWidth() - kCpuTitleGap - kTitleTextX;
     return w < 0 ? 0 : (w > kTitleClipW ? kTitleClipW : w);
 }
 
@@ -229,7 +237,7 @@ namespace {
 // value, so it does not move with the value.
 int cpuLabelX(const CpuCell& c) {
     const int x = c.right - textWidth(kFont4, "00%") - textWidth(kFont4, " ") - textWidth(kFont4, "CPU");
-    return x < c.right - kCpuCellW ? c.right - kCpuCellW : x;
+    return x < c.right - cpuCellWidth() ? c.right - cpuCellWidth() : x;
 }
 // Glyph-run top for text centred on the title row like the status group.
 int titleGlyphY() { return kTitleCentreY - fontHeight(kFont4) / 2; }

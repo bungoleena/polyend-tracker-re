@@ -67,12 +67,50 @@ TEST(resampler_take_stats) {
     CHECK_EQ(r.stats().blocks, 1u);
     CHECK_EQ(r.stats().silentBlocks, 0u);
     CHECK_EQ(r.stats().peak, 32768u);
+    // Null buffers: a block of silence (the engine's "nothing this block").
+    r.tapBlock(nullptr, nullptr, 128);
+    CHECK_EQ(r.stats().blocks, 2u);
+    CHECK_EQ(r.stats().silentBlocks, 1u);
+    CHECK_EQ(r.frames(), 256u);
+    CHECK_EQ(r.left()[200], 0);
+    CHECK_EQ(r.right()[200], 0);
     // Full area: the partial block counts, nothing after it.
     tap(r, 0.1f, 4096);
     CHECK(r.state() == Resampler::kDone);
     const uint32_t blocks = r.stats().blocks;
     tap(r, 0.1f);
     CHECK_EQ(r.stats().blocks, blocks);
+}
+
+// A stop request is a flag the audio side consumes on its next block: the
+// take reads as stopping at once, ends at the next bar, and a request
+// that comes after the take ended changes nothing.
+TEST(resampler_stop_request) {
+    std::vector<int16_t> area(2 * 4096);
+    Resampler r;
+    r.arm(area.data(), uint32_t(area.size()), 0);
+    r.requestStop();                    // armed: no-op
+    r.onBlock(true, true);
+    CHECK(r.state() == Resampler::kRecording);
+    tap(r, 0.25f);
+    r.requestStop();
+    CHECK(r.state() == Resampler::kStopping);
+    r.onBlock(true, false);             // consumed: still stopping until the bar
+    CHECK(r.state() == Resampler::kStopping);
+    tap(r, 0.25f);
+    r.onBlock(true, true);
+    CHECK(r.state() == Resampler::kDone);
+    CHECK(r.end() == Resampler::kEndStopped);
+    CHECK_EQ(r.frames(), 256u);
+    r.requestStop();                    // done: stays done
+    CHECK(r.state() == Resampler::kDone);
+    // A new take does not inherit a request.
+    r.reset();
+    r.arm(area.data(), uint32_t(area.size()), 1);
+    r.onBlock(true, true);
+    CHECK(r.state() == Resampler::kRecording);
+    r.onBlock(true, true);
+    CHECK(r.end() == Resampler::kEndBars);
 }
 
 TEST(resample_report_per_take) {

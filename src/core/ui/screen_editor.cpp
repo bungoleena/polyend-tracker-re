@@ -93,6 +93,17 @@ void EditorScreen::stop() {
     undoAvail = false;
 }
 
+void EditorScreen::update(uint32_t now) {
+    (void)now;
+    // [I] A resample take holds the free bank tail, where the undo data
+    // lives: the take records over it.
+    if (undoAvail && app_.bank.reserved()) {
+        undoAvail = false;
+        refreshBar();
+        ui_.dirty();
+    }
+}
+
 void EditorScreen::stopPreview() {
     if (previewPlaying) app_.previewFile(nullptr, 0, false);
     previewPlaying = false;

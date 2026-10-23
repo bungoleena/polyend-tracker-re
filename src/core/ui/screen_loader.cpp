@@ -394,7 +394,7 @@ void LoaderScreen::openImport() {
     listRange(true, &f, &l);
     if (focus > 1 || count == 0 || f != l || isDir[sdCursor] || !hasExt(entries[sdCursor], ".wav")) return;
     if (app_.instrPresent[insCursor]) {
-        ui_.ask("Replace instrument?", "The instrument will be replaced", nullptr, "Cancel", "Yes",
+        ui_.ask("Replace sample?", "The sample will be replaced", nullptr, "Cancel", "Yes",
                 [](void* ctx, int key) {
                     auto* self = static_cast<LoaderScreen*>(ctx);
                     if (key == btn::F8) self->startTrim();
@@ -497,7 +497,7 @@ void LoaderScreen::add(bool next) {
     for (int i = 0; i < files; ++i) occupied = occupied || a.instrPresent[insCursor + i];
     addNext_ = next;
     if (occupied) {
-        ui_.ask("Replace instrument(s)?", "Existing instruments will be replaced", nullptr, "Cancel", "Yes",
+        ui_.ask("Replace sample(s)?", "Existing samples will be replaced", nullptr, "Cancel", "Yes",
                 [](void* ctx, int key) {
                     auto* self = static_cast<LoaderScreen*>(ctx);
                     if (key == btn::F8) self->doAdd(self->addNext_);

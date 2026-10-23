@@ -166,9 +166,9 @@ public:
     // Render one block: adds into mL/mR and the send buses. stems[s] (may be
     // nullptr) receives slot s's post-gain/pan bus as interleaved int16.
     // Returns true when anything was added.
-    // [I] tapTrack >= 0: the post-gain/pan bus of every slot with a voice
-    // that track started (releases included) is also added into tapL / tapR
-    // (live resampling, Track source).
+    // [I] tapTrack >= 0: every note that track started (releases included)
+    // is also added into tapL / tapR at its slot's gain / pan, dry (live
+    // resampling, Track source; other tracks' notes on the slot are not).
     bool render(const SynthMixInputs& in, float* mL, float* mR, float* dsend, float* rsend, int16_t* const stems[kSynthSlots],
                 int tapTrack = -1, float* tapL = nullptr, float* tapR = nullptr);
 
@@ -207,6 +207,9 @@ private:
         int8_t track = -1;       // holder (-1 none)
         int8_t pending = -1;     // pend_[] entry started on this record after its fade
         uint8_t fresh = 0;       // started since the last render (no frame out yet)
+        int8_t sendD = -1;       // step FX Delay / Reverb Send 0..100 for this note, -1 = the slot's
+        int8_t sendR = -1;
+        int8_t pan = -1;         // step FX Panning 0..100 (50 centre) for this note, -1 none
     };
     // A note-on queued to the next block (note-on spreading) with the
     // note-off / FX that followed it in its block.
@@ -224,6 +227,8 @@ private:
         uint8_t slot = 0;
         SynthNote note;
         float bend = 0.0f, bendTarget = 0.0f, bendStep = 0.0f;
+        int8_t sendD = -1, sendR = -1;   // the note step's Delay / Reverb Send FX
+        int8_t pan = -1;                 // the note step's Panning FX
     };
     static constexpr int kPending = 2;
     struct Slot {
@@ -281,8 +286,7 @@ private:
     void fade(int r, bool steal = false);
     void startOn(int r, int track, int s, const SynthNote& n, float bend, float bendTarget, float bendStep);
     void releaseTrack(int track);
-    float mixSlot(Slot& sl, float* mL, float* mR, float* dsend, float* rsend, int16_t* stem, float* tapL = nullptr,
-                  float* tapR = nullptr);   // block peak
+    float mixSlot(Slot& sl, float* mL, float* mR, float* dsend, float* rsend, int16_t* stem);   // block peak
     void notePitchFx(const SynthNoteOn& n, float prevPitch, bool hasPrev, float& bend, float& target, float& step) const;
 
     Voice voices_[kSynthMaxVoices];
@@ -330,6 +334,9 @@ private:
         return false;
     }
     float busL_[kBlock] = {}, busR_[kBlock] = {};   // slot bus, zero between slots
+    float voiceL_[kBlock] = {}, voiceR_[kBlock] = {};
+    int8_t noteSendD_ = -1, noteSendR_ = -1;   // sends of the note being started (startOn)
+    int8_t notePan_ = -1;                      // its Panning FX   // a note with its own sends (step FX)
     volatile float peak_[kSynthSlots] = {};          // bus peaks for slotPeak()
     volatile float trackPeak_[kSynthTracks] = {};    // per-track shares for trackPeak()
     float tempo_ = 130.0f;

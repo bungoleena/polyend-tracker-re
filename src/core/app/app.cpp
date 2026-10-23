@@ -180,22 +180,32 @@ void App::preBlock(float seconds) {
     // clock (live 128/44122.65 s, offline kRenderBlockSeconds).
     seq.processElapsed(seconds);
     // [I] Live resampling: did a bar start in this block (its notes are
-    // rendered in it)? Bars count from play start, as the metronome does.
+    // rendered in it)? Bars follow the pattern as the metronome counts them
+    // (track 1's step % bar): the pattern's first step always starts one, so
+    // a pattern shorter or longer than whole bars stays in step with them.
     if (!rendering_) {
         const bool playing = seq.isPlaying();
-        const int32_t st = seq.masterStep();
+        const int32_t st = seq.step(0);
         const int32_t bar = resampleBarSteps();
         bool barStart = false;
         if (playing) {
-            if (!resampleWasPlaying_ || st < resampleLastStep_) {
-                barStart = st % bar == 0;   // play start (step 0) or a restart
+            if (!resampleWasPlaying_) {
+                barStart = st % bar == 0;   // play start
+            } else if (st < resampleLastStep_) {
+                barStart = true;            // the pattern wrapped (or restarted): step 0
             } else {
                 for (int32_t k = resampleLastStep_ + 1; k <= st; ++k) barStart = barStart || k % bar == 0;
             }
         }
         resampleWasPlaying_ = playing;
         resampleLastStep_ = st;
-        if (resampler.busy()) resampler.onBlock(playing, barStart);
+        if (resampler.busy()) {
+            resampler.onBlock(playing, barStart);
+            // Line in takes record the input as it comes in, whatever the
+            // monitor (Monitor Off keeps it out of the engine's mix).
+            if (resampler.source() == audio::AudioEngine::kTapLineIn)
+                resampler.tapLine(in, engine.settings().lineInChannel, audio::kBlock);
+        }
     }
 }
 

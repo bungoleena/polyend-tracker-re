@@ -668,6 +668,7 @@ public:
     const char* name() const override { return "Sample Editor"; }
     void start(int opt) override;
     void stop() override;
+    void update(uint32_t now) override;
     void draw(Gfx& g) override;
     void onButton(uint8_t id, uint8_t state) override;
     void onEncoder(int d) override;
@@ -811,6 +812,9 @@ public:
     void draw(Gfx& g) override;
     void onButton(uint8_t id, uint8_t state) override;
     void onEncoder(int d) override;
+#if !(defined(OT_TARGET_DEVICE) && OT_TARGET_DEVICE)
+    bool encoderOnList() const override;
+#endif
     int sel = 0;   // column: 0 From, 1 Length, 2 Slices, 3 Into, 4 Place on, 5 Gain, 6 Monitor
 
 private:

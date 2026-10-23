@@ -11,33 +11,42 @@ inline int16_t toS16(float x) {
 }
 }  // namespace
 
-void Resampler::arm(int16_t* area, uint32_t areaSamples, uint8_t bars) {
+void Resampler::arm(int16_t* area, uint32_t areaSamples, uint8_t bars, uint8_t source) {
     area_ = area;
     half_ = areaSamples / 2;
     bars_ = bars;
+    source_ = source;
     frames_ = 0;
     barsDone_ = 0;
     end_ = kEndNone;
     stats_ = TakeStats{};
     silentRun_ = 0;
+    stopRequested_ = false;
+    // Everything above is written before the audio side can see kArmed.
+    __atomic_signal_fence(__ATOMIC_SEQ_CST);
     state_ = kArmed;
 }
 
 void Resampler::requestStop() {
-    if (state_ == kRecording) state_ = kStopping;
+    // A flag, not a state write: the audio side may finish the take (kDone)
+    // between a read of state_ here and a write back.
+    if (state_ == kRecording) stopRequested_ = true;
 }
 
 void Resampler::reset() {
     // area_ stays valid: on the host the audio thread may still be inside
     // tapBlock(); it sees kIdle on its next block.
     state_ = kIdle;
+    stopRequested_ = false;
     end_ = kEndNone;
     frames_ = 0;
     barsDone_ = 0;
 }
 
 void Resampler::onBlock(bool playing, bool barStart) {
-    const uint8_t s = state_;
+    uint8_t s = state_;
+    if (s == kRecording && stopRequested_) state_ = s = kStopping;
+    stopRequested_ = false;
     if (s == kRecording || s == kStopping) {
         if (!playing) {
             finish(kEndTransport);
@@ -67,6 +76,26 @@ void Resampler::onBlock(bool playing, bool barStart) {
 }
 
 void Resampler::tapBlock(const float* l, const float* r, uint32_t n) {
+    store(n, [l, r](uint32_t i, int16_t& a, int16_t& b) {
+        a = l ? toS16(l[i]) : int16_t(0);
+        b = r ? toS16(r[i]) : int16_t(0);
+    });
+}
+
+void Resampler::tapLine(const int16_t* in, uint8_t channel, uint32_t n) {
+    store(n, [in, channel](uint32_t i, int16_t& a, int16_t& b) {
+        if (!in) {
+            a = b = 0;
+            return;
+        }
+        const int16_t l = in[2 * i], r = in[2 * i + 1];
+        a = channel == 2 ? r : l;
+        b = channel == 1 ? l : r;
+    });
+}
+
+template <typename Get>
+void Resampler::store(uint32_t n, Get get) {
     const uint8_t s = state_;
     if (s != kRecording && s != kStopping) return;
     uint32_t f = frames_;
@@ -76,7 +105,8 @@ void Resampler::tapBlock(const float* l, const float* r, uint32_t n) {
     int16_t* R = area_ + half_ + f;
     uint32_t pk = 0;
     for (uint32_t i = 0; i < m; ++i) {
-        const int16_t a = toS16(l[i]), b = toS16(r[i]);
+        int16_t a, b;
+        get(i, a, b);
         L[i] = a;
         R[i] = b;
         const uint32_t pa = uint32_t(a < 0 ? -int32_t(a) : a), pb = uint32_t(b < 0 ? -int32_t(b) : b);

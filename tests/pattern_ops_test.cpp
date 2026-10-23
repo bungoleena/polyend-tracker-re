@@ -172,3 +172,21 @@ TEST(paste_over_16_tracks_clamps) {
     pops::setLength(p, 16);
     CHECK_EQ(int(p.tracks[15].lastStep), 15);
 }
+
+TEST(write_instrument_selection_moves_off_steps_too) {
+    // 2.x (user request): changing the instrument of a selection also moves
+    // its OFF / CUT / FADE steps; empty steps stay empty.
+    Pattern p;
+    Track& t = p.tracks[0];
+    t.steps[0].note = 60;
+    t.steps[0].instrument = 1;
+    t.steps[1].note = kNoteOff;
+    t.steps[1].instrument = 1;
+    t.steps[2].note = kNoteCut;
+    t.steps[2].instrument = 1;
+    pops::writeInstrument(p, rect(0, 3, 0, 0), 5);
+    CHECK_EQ(int(t.steps[0].instrument), 5);
+    CHECK_EQ(int(t.steps[1].instrument), 5);
+    CHECK_EQ(int(t.steps[2].instrument), 5);
+    CHECK(t.steps[3].note == kNoteEmpty);
+}

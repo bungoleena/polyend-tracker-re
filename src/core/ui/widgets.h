@@ -126,6 +126,8 @@ uint32_t cpuCellColour(const Theme& th, CpuLevel level);
 int cpuCellRight(uint32_t seconds);
 // Title clip width with the cell shown (or kTitleClipW when cell is null / hidden).
 int titleClipWidth(const CpuCell* cell);
+// Width of the CPU cell in the bound font set (>= kCpuCellW).
+int cpuCellWidth();
 
 struct TitleStatus {
     uint32_t seconds = 0;          // play time

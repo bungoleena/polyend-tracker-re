@@ -112,13 +112,18 @@ App::ResampleAction App::resampleToggle() {
     switch (resampler.state()) {
         case Resampler::kIdle: {
             if (sampleBankLent || rendering_ || (jobBusy() && jobOp() != JobOp::Autosave)) return ResampleAction::kBusy;
+            // The free bank tail is in use: a Sample Recorder recording or a
+            // streamed Sample Loader preview decoding into it.
+            if (capture.active() || engine.previewBufferActive()) return ResampleAction::kBusy;
             if (resampleTarget(0, nullptr, nullptr) < 0) return ResampleAction::kNoSlot;
             // All free sample memory is held for the recording (two planar
             // halves); loads meanwhile see none and cannot touch it.
             const size_t free = bank.freeSamples() & ~size_t(1);
             if (free < 2u * 44100u || free > 0xFFFFFFFEu || !bank.setReserved(free)) return ResampleAction::kNoMemory;
-            resampler.arm(bank.reservedArea(), uint32_t(free), kResampleBars[resampleCfg.length % ResampleSettings::kLengths]);
-            engine.setResampleTap(&resampler, resampleCfg.source);
+            resampler.arm(bank.reservedArea(), uint32_t(free), kResampleBars[resampleCfg.length % ResampleSettings::kLengths],
+                          resampleCfg.source);
+            // Line in is tapped in App::preBlock, from the input itself.
+            if (resampleCfg.source != audio::AudioEngine::kTapLineIn) engine.setResampleTap(&resampler, resampleCfg.source);
             return ResampleAction::kArmed;
         }
         case Resampler::kArmed:
@@ -159,7 +164,7 @@ void App::serviceResample() {
 void App::reportResample(uint8_t outcome, int slot) {
     ResampleReport& r = lastResample;
     ++r.seq;
-    r.source = resampleCfg.source;
+    r.source = resampler.source();
     r.end = resampler.end();
     r.outcome = outcome;
     r.slot = int8_t(slot);
@@ -225,7 +230,7 @@ void App::finishResample() {
     Instrument ins = instruments[slot];
     if (!keep) {
         ins.setDefault();
-        const uint8_t src = resampleCfg.source;
+        const uint8_t src = resampler.source();   // as armed (From may have changed)
         if (src == 0) std::snprintf(ins.name, sizeof(ins.name), "Resample Master");
         else if (src == audio::AudioEngine::kTapLineIn) std::snprintf(ins.name, sizeof(ins.name), "Resample Line in");
         else std::snprintf(ins.name, sizeof(ins.name), "Resample Track %d", src);

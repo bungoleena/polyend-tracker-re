@@ -2399,6 +2399,11 @@ bool App::importSample(const char* path, int slot, uint16_t startMarker, uint16_
     finishJob();   // the bank moves under a running instrument write
     IStorage& f = fs();
     allVoicesOff();   // bank moves invalidate voice sample pointers
+    // A WAV loaded into an existing instrument keeps its settings (stock:
+    // copy an instrument, then load another sample into the copy; user
+    // report / Polyend forum); only the audio and its name change.
+    const bool keep = instrPresent[slot];
+    const Instrument prev = instruments[slot];
     bank.remove(slot);
     instrPresent[slot] = false;
     Instrument ins;
@@ -2433,6 +2438,14 @@ bool App::importSample(const char* path, int slot, uint16_t startMarker, uint16_
             ins.reserved173 = uint8_t(int8_t(-12));
         }
         ins.setDefault();
+        if (keep) {
+            ins = prev;
+            ins.sampleType = uint8_t(SampleType::WaveFile);
+            ins.stereo = false;
+            ins.reserved173 = 0;
+            ins.name[0] = 0;
+            if (ins.wavetableWindowSize) ins.wavetableWindowCount = frames / ins.wavetableWindowSize;
+        }
         if (lowQuality) ins.reserved173 = uint8_t(int8_t(-12));
         // Name = file name without extension, max 31 chars (spec 06 §5.4).
         const char* bn = baseName(path);

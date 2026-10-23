@@ -331,11 +331,18 @@ void AudioEngine::voiceNoteOn(uint8_t track, const VoiceNoteOn& n) {
     voices_[track].noteOn(&ins, bank_.left(n.instrument), bank_.frames(n.instrument), n.note, n.volume,
                           n.fxA.type, n.fxA.value, n.fxB.type, n.fxB.value,
                           bank_.stereo(n.instrument) ? bank_.right(n.instrument) : nullptr);
+    pendingOff_[track] = 0;
+    startedInBlock_[track] = true;
 }
 
 void AudioEngine::voiceNoteOff(uint8_t track, NoteOffMode mode) {
     NoteStamp st(inHook_ ? &prof_.smpOn : nullptr);
-    if (track < kVoices) voices_[track].noteOff(int8_t(mode));
+    if (track >= kVoices) return;
+    if (startedInBlock_[track]) {   // applied at the next block's start
+        pendingOff_[track] = int8_t(mode);
+        return;
+    }
+    voices_[track].noteOff(int8_t(mode));
 }
 
 void AudioEngine::voiceApplyFx(uint8_t track, uint8_t slot, uint8_t type, uint8_t value) {
@@ -569,6 +576,14 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
     auto stamp = [prof]() { return prof ? CpuMeter::stampCycles() : 0u; };
     synth_.setProfile(prof ? &prof_ : nullptr);
     const uint32_t pc0 = stamp();
+    // 0. note-offs held back from the last block (voiceNoteOff).
+    for (int t = 0; t < kVoices; ++t) {
+        startedInBlock_[t] = false;
+        if (const int8_t m = pendingOff_[t]) {
+            pendingOff_[t] = 0;
+            voices_[t].noteOff(m);
+        }
+    }
     // 1. sequencer advance (spec 04 §1.1 step 1 / §6.1)
     inHook_ = prof;
     if (hook_) hook_(hookCtx_, blockSeconds);
@@ -589,12 +604,17 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
     IResampleTap* const tap = offline ? nullptr : tap_;
     const int tapTrack = tap && tapSource_ >= 1 && tapSource_ <= kVoices ? tapSource_ - 1 : -1;
     bool tapVoiceOn = false;
-    // Tap buffer: silence, or the Track source's synth slots + its voice.
-    float tapL[kBlock], tapR[kBlock];
-    if (tap) {
-        zeroFloats(tapL, kBlock);
-        zeroFloats(tapR, kBlock);
+    // The Track source accumulates in the track's own post-pan output
+    // (vout_, no block buffer on the ISR stack): its voice, then the synth
+    // notes it plays. A track that was tapped last block gets its output
+    // zeroed once, so it never carries synth data into a later stem.
+    if (tapLast_ >= 0 && tapLast_ != tapTrack) {
+        zeroFloats(vout_[tapLast_].l, kBlock);
+        zeroFloats(vout_[tapLast_].r, kBlock);
     }
+    tapLast_ = int8_t(tapTrack);
+    float* const tapL = tapTrack >= 0 ? vout_[tapTrack].l : nullptr;
+    float* const tapR = tapTrack >= 0 ? vout_[tapTrack].r : nullptr;
     for (int t = 0; t < kVoices; ++t) {
         if (voices_[t].render(vc_[t], vout_[t], dsend_, rsend_, mL_, mR_, stems != nullptr || t == tapTrack)) {
             if (t == tapTrack) tapVoiceOn = true;
@@ -608,6 +628,10 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
         }
         head_[t] = voices_[t].playhead();
     }
+    if (tapTrack >= 0 && !tapVoiceOn) {   // a silent voice zeroes its output only once
+        zeroFloats(tapL, kBlock);
+        zeroFloats(tapR, kBlock);
+    }
     const uint32_t pc3 = stamp();
     // 3b. synth slots (2.x M3): voices -> slot gain / pan -> main bus and
     //     sends; the Synth 1..3 stems are tapped from the slot buses.
@@ -615,8 +639,7 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
         int16_t* synthStems[kSynthSlots] = {};
         if (stems)
             for (int s = 0; s < kSynthSlots; ++s) synthStems[s] = stems->data[StemBlock::kFirstSynthStem + s];
-        anyVoice |= synth_.render(synthIn_, mL_, mR_, dsend_, rsend_, synthStems, tapTrack, tapTrack >= 0 ? tapL : nullptr,
-                                  tapTrack >= 0 ? tapR : nullptr);
+        anyVoice |= synth_.render(synthIn_, mL_, mR_, dsend_, rsend_, synthStems, tapTrack, tapL, tapR);
         sendsTouched = 3;   // (the slots' send taps: not tracked)
     }
     const uint32_t pc4 = stamp();
@@ -741,22 +764,11 @@ void AudioEngine::renderBlock(bool offline, int16_t* master, StemBlock* stems) {
     const bool limR = limR_.process(mR_, sc, limOutR);
     if (tap) {
         // [I] Resample tap (see setResampleTap); a source that produced
-        // nothing this block taps silence. A Track source is the track's
-        // sample voice plus the synth slots it plays (in tapL / tapR from
-        // the synth render), dry: no delay / reverb.
+        // nothing this block taps silence (null: IResampleTap). A Track
+        // source is the track's sample voice plus the synth notes it plays
+        // (tapL / tapR = its vout_), dry: no delay / reverb.
         const float *tl = tapL, *tr = tapR;
-        if (tapTrack >= 0) {
-            if (tapVoiceOn)
-                for (uint32_t i = 0; i < kBlock; ++i) {
-                    tapL[i] += vout_[tapTrack].l[i];
-                    tapR[i] += vout_[tapTrack].r[i];
-                }
-        } else if (tapSource_ == kTapLineIn) {
-            if (line) {
-                tl = lineL_;
-                tr = lineR_;
-            }
-        } else {
+        if (tapTrack < 0) {
             if (limL) tl = limOutL;
             if (limR) tr = limOutR;
         }

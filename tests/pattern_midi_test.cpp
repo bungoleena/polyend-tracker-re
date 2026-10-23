@@ -5,6 +5,7 @@
 #include "test.h"
 #include "ui_fakes.h"
 
+#include "app/project_fields.h"
 #include "ui/screens.h"
 
 using namespace ot;
@@ -50,20 +51,26 @@ TEST(midi_note_step_entry_in_edit_mode) {
     CHECK(a.pattern().tracks[0].steps[0].instrument == 3);   // empty cell takes the current instrument
     CHECK(a.pattern().tracks[0].steps[0].fx[0].type == 0);   // no velocity FX outside a velocity mode
     CHECK(a.pattern().tracks[0].steps[0].fx[1].type == 0);
-    CHECK(pe(h).step == 0);   // spec 17 §1.4 step 8: the cursor does not move
+    CHECK(pe(h).step == 1);   // 2.x: the cursor moves by the step jump (stock: stays)
     // A cell that already holds a note keeps its instrument.
+    h.tap(btn::Up);
     a.setCurrentInstrument(5);
     midiNote(h, 67, 90);
     CHECK(a.pattern().tracks[0].steps[0].note == 67);
     CHECK(a.pattern().tracks[0].steps[0].instrument == 3);
     // Written regardless of the cursor column.
     h.tap(btn::Down);
-    h.tap(btn::Down);
     h.tap(btn::Instr);
     midiNote(h, 70, 90);
     CHECK(a.pattern().tracks[0].steps[2].note == 70);
     CHECK(a.pattern().tracks[0].steps[2].instrument == 5);
-    // Undo restores the cell.
+    // Step jump 4: the next note lands 4 rows further (user request).
+    a.project.setU8(pf::kStepJump, 4);
+    const int at = pe(h).step;
+    midiNote(h, 72, 90);
+    CHECK_EQ(pe(h).step, at + 4);
+    // Undo restores the cells, newest first.
+    CHECK(a.undoEdit());
     CHECK(a.undoEdit());
     CHECK(a.pattern().tracks[0].steps[2].note == kNoteEmpty);
 }

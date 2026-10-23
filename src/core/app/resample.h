@@ -7,8 +7,10 @@
 //
 // Audio context: onBlock() from App::preBlock after the sequencer advanced,
 // tapBlock() from the engine after the mix (audio::IResampleTap). Main loop:
-// arm / requestStop / reset and the state getters. No locking: single
-// volatile state byte, the area is only touched by one side at a time.
+// arm / requestStop / reset and the state getters. No locking: the audio
+// side owns state_ once armed (the main loop writes it only in arm() and
+// reset(), while no take runs or to drop one); a stop request is a flag the
+// audio side consumes. The area is only touched by one side at a time.
 #pragma once
 
 #include <cstddef>
@@ -61,18 +63,24 @@ public:
     };
 
     // Main loop. `area` holds two planar halves of areaSamples / 2 frames
-    // (left, right). bars = 0: until requestStop().
-    void arm(int16_t* area, uint32_t areaSamples, uint8_t bars);
+    // (left, right). bars = 0: until requestStop(). source
+    // (ResampleSettings::source) is kept for the take: From may change
+    // while it runs.
+    void arm(int16_t* area, uint32_t areaSamples, uint8_t bars, uint8_t source = 0);
     // Recording: stop at the next bar (keeps what was recorded). Armed: no-op.
     void requestStop();
     void reset();   // back to idle (the caller releases the area)
 
-    State state() const { return State(state_); }
+    State state() const {
+        const uint8_t s = state_;
+        return s == kRecording && stopRequested_ ? kStopping : State(s);
+    }
     bool busy() const { return state_ != kIdle; }
     End end() const { return End(end_); }
     uint32_t frames() const { return frames_; }
     uint32_t barsDone() const { return barsDone_; }
     uint8_t bars() const { return bars_; }
+    uint8_t source() const { return source_; }
     uint32_t capacityFrames() const { return half_; }
     const TakeStats& stats() const { return stats_; }
     const int16_t* left() const { return area_; }
@@ -82,8 +90,14 @@ public:
     // barStart: a bar began in this block (its notes start in it).
     void onBlock(bool playing, bool barStart);
     void tapBlock(const float* l, const float* r, uint32_t n) override;
+    // Audio context, Line in takes (App::preBlock): n interleaved int16
+    // frames straight from the input (null: silence), with the Config line
+    // in channel mode (0 stereo, 1 left, 2 right: that side on both).
+    void tapLine(const int16_t* in, uint8_t channel, uint32_t n);
 
 private:
+    template <typename Get>
+    void store(uint32_t n, Get get);
     void finish(End e) {
         end_ = e;
         state_ = kDone;
@@ -91,10 +105,12 @@ private:
     int16_t* area_ = nullptr;
     uint32_t half_ = 0;
     volatile uint8_t state_ = kIdle;
+    volatile bool stopRequested_ = false;   // main loop -> onBlock()
     volatile uint8_t end_ = kEndNone;
     volatile uint32_t frames_ = 0;
     volatile uint32_t barsDone_ = 0;
     uint8_t bars_ = 0;
+    uint8_t source_ = 0;
     TakeStats stats_;
     uint32_t silentRun_ = 0;
 };

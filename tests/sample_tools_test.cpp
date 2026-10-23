@@ -611,3 +611,34 @@ TEST(loader_sd_preview_follows_the_cursor) {
     h.up(btn::F3);
     CHECK(!a.engine.previewBufferActive());
 }
+
+// User report (stock behaviour per the Polyend forum): loading a sample into
+// an existing instrument keeps its settings; only the audio and name change.
+TEST(import_into_existing_instrument_keeps_its_settings) {
+    Harness h;
+    App& a = *h.app;
+    std::vector<int16_t> s1(20000, 1000), s2(30000, -1000);
+    putWavCh(h, "chord_a.wav", s1, 1);
+    putWavCh(h, "chord_b.wav", s2, 1);
+    CHECK(a.importSample("chord_a.wav", 2));
+    Instrument& in = a.instruments[2];
+    in.volume = 33;
+    in.tune = 7;
+    in.filterEnabled = 1;
+    in.cutoff = 0.4f;
+    in.reverbSend = 55;
+    in.playMode = uint8_t(PlayMode::ForwardLoop);
+    in.env[0].releaseMs = 1234;
+    CHECK(a.importSample("chord_b.wav", 2));
+    CHECK_STR(a.instruments[2].name, "chord_b");
+    CHECK_EQ(a.instruments[2].lengthFrames, 30000u);
+    CHECK_EQ(int(a.instruments[2].volume), 33);
+    CHECK_EQ(int(a.instruments[2].tune), 7);
+    CHECK_EQ(int(a.instruments[2].filterEnabled), 1);
+    CHECK_EQ(int(a.instruments[2].reverbSend), 55);
+    CHECK_EQ(int(a.instruments[2].playMode), int(PlayMode::ForwardLoop));
+    CHECK_EQ(int(a.instruments[2].env[0].releaseMs), 1234);
+    // An empty slot still starts from the defaults.
+    CHECK(a.importSample("chord_a.wav", 5));
+    CHECK_EQ(int(a.instruments[5].volume), 50);
+}

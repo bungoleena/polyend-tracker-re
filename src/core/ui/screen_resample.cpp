@@ -148,6 +148,12 @@ void ResampleScreen::change(int d) {
 
 void ResampleScreen::onEncoder(int d) { change(d); }
 
+#if !(defined(OT_TARGET_DEVICE) && OT_TARGET_DEVICE)
+bool ResampleScreen::encoderOnList() const {
+    return sel != kColGain;   // every column but Gain is a list
+}
+#endif
+
 void ResampleScreen::onButton(uint8_t id, uint8_t st) {
     App& a = app_;
     if (st != kPress) return;

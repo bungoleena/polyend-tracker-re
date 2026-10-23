@@ -14,7 +14,7 @@ namespace audio {
 namespace {
 inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 // Step FX ids (spec 03 §3.6).
-constexpr uint8_t kFxRandVol = 7, kFxVol = 18, kFxGlideId = 19, kFxMicro = 34, kFxTuneId = 40, kFxSlideU = 41,
+constexpr uint8_t kFxDelaySend = 30, kFxPanning = 31, kFxReverbSend = 32, kFxRandVol = 7, kFxVol = 18, kFxGlideId = 19, kFxMicro = 34, kFxTuneId = 40, kFxSlideU = 41,
                   kFxSlideD = 42;
 }  // namespace
 
@@ -477,6 +477,9 @@ void SynthBank::startOn(int r, int track, int s, const SynthNote& n, float bend,
     V.bendTarget = target;
     V.bendStep = step;
     V.vel = n.velocity;
+    V.sendD = noteSendD_;
+    V.sendR = noteSendR_;
+    V.pan = notePan_;
     V.age = ++serial_;
     V.state = kOn;
     V.pending = -1;
@@ -611,6 +614,14 @@ void SynthBank::noteOnNow(int track, const SynthNoteOn& n, bool forced) {
     float bend, target, step;
     const bool hasPrev = trackPitch_[track] >= 0.0f;
     notePitchFx(n, trackPitch_[track], hasPrev, bend, target, step);
+    // The step's Delay / Reverb Send FX: this note's own sends.
+    noteSendD_ = noteSendR_ = notePan_ = -1;
+    const StepFx stepFx[2] = {n.fxA, n.fxB};
+    for (const StepFx& f : stepFx) {
+        if (f.type == kFxDelaySend) noteSendD_ = int8_t(f.value > 100 ? 100 : f.value);
+        if (f.type == kFxReverbSend) noteSendR_ = int8_t(f.value > 100 ? 100 : f.value);
+        if (f.type == kFxPanning) notePan_ = int8_t(f.value > 100 ? 100 : f.value);
+    }
     // A Glide FX starts at the previous pitch through the bend; the engine's
     // patch glide would start there too and the two would add up.
     note.fxGlide = hasPrev && ((n.fxA.type == kFxGlideId && n.fxA.value) || (n.fxB.type == kFxGlideId && n.fxB.value));
@@ -632,8 +643,12 @@ void SynthBank::noteOnNow(int track, const SynthNoteOn& n, bool forced) {
             V.bendTarget = target;
             V.bendStep = step;
             V.vel = note.velocity;
+            V.sendD = noteSendD_;
+            V.sendR = noteSendR_;
+            V.pan = notePan_;
             V.age = ++serial_;
             V.track = int8_t(track);
+            owner_[r] = int8_t(track);   // [I] the resample tap follows the note
             trackVoice_[track] = int8_t(r);
             if (prof_) BlockProfile::inc(prof_->nSynOn[s]);
             sl.eng->noteOn(V.v, sl.p, note);
@@ -672,6 +687,9 @@ void SynthBank::noteOnNow(int track, const SynthNoteOn& n, bool forced) {
         pe.bend = bend;
         pe.bendTarget = target;
         pe.bendStep = step;
+        pe.sendD = noteSendD_;
+        pe.sendR = noteSendR_;
+        pe.pan = notePan_;
         voices_[host].pending = int8_t(e);
         return;
     }
@@ -731,8 +749,16 @@ void SynthBank::applyFx(int track, uint8_t type, uint8_t value) {
             V.bendTarget = clampf(float(value) - 99.0f, -99.0f, 99.0f) * 0.01f;
             V.bendStep = 0.0f;
             break;
+        // Step FX Delay / Reverb Send set this note's send (user report:
+        // the step FX left synth tracks dry); render() adds the difference
+        // to the slot's send.
+        case kFxDelaySend: V.sendD = int8_t(value > 100 ? 100 : value); break;
+        case kFxReverbSend: V.sendR = int8_t(value > 100 ? 100 : value); break;
+        // Panning: this note's balance (0 left, 50 centre, 100 right), on
+        // top of the slot's pan (exact at the slot's default centre).
+        case kFxPanning: V.pan = int8_t(value > 100 ? 100 : value); break;
         default:
-            break;   // pan / sends / filter FX: not on synth notes in 2.0
+            break;   // filter FX: not on synth notes
     }
 }
 
@@ -779,6 +805,18 @@ void SynthBank::stopAll() {
 
 // --- render ----------------------------------------------------------------------------
 
+namespace {
+// [I] Resample tap (only while a Track take runs): one note's signal x the
+// slot's gain / pan (block-end values) into tl / tr, dry. In flash, not
+// .fastrun, to keep SRAM for the stack.
+__attribute__((noinline)) void addTap(float* tl, float* tr, const float* vl, const float* vr, float gl, float gr) {
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        tl[i] += vl[i] * gl;
+        tr[i] += vr[i] * gr;
+    }
+}
+}  // namespace
+
 OT_FASTRUN_FN bool SynthBank::render(const SynthMixInputs& in, float* mL, float* mR, float* dsend, float* rsend,
                        int16_t* const stems[kSynthSlots], int tapTrack, float* tapL, float* tapR) {
     sync();
@@ -786,12 +824,8 @@ OT_FASTRUN_FN bool SynthBank::render(const SynthMixInputs& in, float* mL, float*
     if (flushDue_) flushDeferred();   // no note-on came first in this block
     // Records per slot (one pass).
     uint8_t busy[kSynthSlots] = {};
-    bool tapSlot[kSynthSlots] = {};   // [I] resample tap: slots the tapped track plays
-    for (int r = 0; r < kSynthMaxVoices; ++r)
-        if (voices_[r].state != kFree) {
-            ++busy[voices_[r].v.slot];
-            if (tapL && owner_[r] == tapTrack) tapSlot[voices_[r].v.slot] = true;
-        }
+    for (const Voice& v : voices_)
+        if (v.state != kFree) ++busy[v.v.slot];
     bool any = false;
     for (int s = 0; s < kSynthSlots; ++s) {
         Slot& sl = slots_[s];
@@ -857,17 +891,51 @@ OT_FASTRUN_FN bool SynthBank::render(const SynthMixInputs& in, float* mL, float*
             const float gInc = (target - g0) * (1.0f / float(kBlock));
             V.g = target;
             bool alive = false;
+            // A note with its own send renders into a scratch pair, joins
+            // the bus, and adds (own send - slot send) x its signal to the
+            // send buses (same law as mixSlot: (L + R) x 0.5 x SEND x level).
+            // [I] A note of the resample-tapped track does too: only its
+            // own signal goes to the tap.
+            const bool tapV = tapL && owner_[r] == tapTrack;
+            const bool own = tapV || V.sendD >= 0 || V.sendR >= 0 || V.pan >= 0;
+            float* vl = busL_;
+            float* vr = busR_;
+            if (own) {
+                for (uint32_t i = 0; i < kBlock; ++i) voiceL_[i] = voiceR_[i] = 0.0f;
+                vl = voiceL_;
+                vr = voiceR_;
+            }
             if (sl.eng) {
                 if (prof) {
                     const uint32_t c0 = CpuMeter::stampCycles();
-                    alive = sl.eng->render(V.v, p, g0, gInc, busL_, busR_);
+                    alive = sl.eng->render(V.v, p, g0, gInc, vl, vr);
                     const uint32_t d = CpuMeter::stampCycles() - c0;
                     engCyc += d;
                     if (d > prof_->voiceMax) prof_->voiceMax = d;
                     BlockProfile::inc(prof_->nSynVoices);
                 } else {
-                    alive = sl.eng->render(V.v, p, g0, gInc, busL_, busR_);
+                    alive = sl.eng->render(V.v, p, g0, gInc, vl, vr);
                 }
+            }
+            if (own) {
+                if (V.pan >= 0 && V.pan != 50) {
+                    float pl, pr;
+                    panGains(V.pan, pl, pr);
+                    for (uint32_t i = 0; i < kBlock; ++i) {
+                        voiceL_[i] *= pl;
+                        voiceR_[i] *= pr;
+                    }
+                }
+                const float xd = V.sendD >= 0 ? (0.5f * sendGain(V.sendD) - sl.mixD) * in.delayLevel : 0.0f;
+                const float xr = V.sendR >= 0 ? (0.5f * sendGain(V.sendR) - sl.mixE) * in.reverbLevel : 0.0f;
+                for (uint32_t i = 0; i < kBlock; ++i) {
+                    const float m = voiceL_[i] + voiceR_[i];
+                    busL_[i] += voiceL_[i];
+                    busR_[i] += voiceR_[i];
+                    if (dsend) dsend[i] += m * xd;
+                    if (rsend) rsend[i] += m * xr;
+                }
+                if (tapV) addTap(tapL, tapR, voiceL_, voiceR_, gl, gr);
             }
             if (V.state == kFading || !alive) {
                 if (V.track >= 0 && trackVoice_[V.track] == r) trackVoice_[V.track] = -1;
@@ -891,6 +959,9 @@ OT_FASTRUN_FN bool SynthBank::render(const SynthMixInputs& in, float* mL, float*
                         }
                         releaseTrack(q.track);
                         if (prof_) BlockProfile::inc(prof_->nPendStart);
+                        noteSendD_ = q.sendD;
+                        noteSendR_ = q.sendR;
+                        notePan_ = q.pan;
                         startOn(r, q.track, q.slot, q.note, q.bend, q.bendTarget, q.bendStep);
                     }
                     q.record = -1;
@@ -899,8 +970,7 @@ OT_FASTRUN_FN bool SynthBank::render(const SynthMixInputs& in, float* mL, float*
         }
         if (tapped) sl.eng->setSendTap(s, nullptr, nullptr, 0.0f, 0.0f);
         if (prof) prof_->slot[s] += engCyc;
-        const float pk = mixSlot(sl, mL, mR, dsend, rsend, stem, tapSlot[s] ? tapL : nullptr,
-                                 tapSlot[s] ? tapR : nullptr);
+        const float pk = mixSlot(sl, mL, mR, dsend, rsend, stem);
         // Track Mixer meters: the slot's block peak shared by its sounding
         // voices by envelope level x gain (exact for one voice).
         if (pk > 0.0f) {
@@ -951,16 +1021,6 @@ OT_FASTRUN_FN void mixLoop(float* bl, float* br, float* mL, float* mR, float* ds
         br[i] = kKeep ? r : 0.0f;
     }
 }
-// [I] Resample tap (only while a Track take runs): adds the slot bus into
-// tl / tr, then clears the bus when `clear`. In flash, not .fastrun, to keep
-// SRAM for the stack.
-__attribute__((noinline)) void addTap(float* tl, float* tr, float* bl, float* br, bool clear) {
-    for (uint32_t i = 0; i < kBlock; ++i) {
-        tl[i] += bl[i];
-        tr[i] += br[i];
-        if (clear) bl[i] = br[i] = 0.0f;
-    }
-}
 using MixFn = void (*)(float*, float*, float*, float*, float*, float*, float, float, float, float, float, float, float,
                        float);
 // [ramp][delay][reverb]
@@ -970,8 +1030,7 @@ const MixFn kMix[2][2][2] = {{{mixLoop<false, false, false, false>, mixLoop<fals
                               {mixLoop<true, true, false, false>, mixLoop<true, true, true, false>}}};
 }  // namespace
 
-OT_FASTRUN_FN float SynthBank::mixSlot(Slot& sl, float* mL, float* mR, float* dsend, float* rsend, int16_t* stem,
-                                      float* tapL, float* tapR) {
+OT_FASTRUN_FN float SynthBank::mixSlot(Slot& sl, float* mL, float* mR, float* dsend, float* rsend, int16_t* stem) {
     float l0, r0, d0, e0;
     const float li = sl.gl.begin(l0), ri = sl.gr.begin(r0), di = sl.sd.begin(d0), ei = sl.sr.begin(e0);
     const bool dl = d0 != 0.0f || di != 0.0f, rv = e0 != 0.0f || ei != 0.0f;
@@ -995,13 +1054,11 @@ OT_FASTRUN_FN float SynthBank::mixSlot(Slot& sl, float* mL, float* mR, float* ds
         if (pk > peak_[s]) peak_[s] = pk;
         blockPk = pk;
     }
-    if (!stem && !tapL) {
+    if (!stem) {
         kMix[ramp][dl][rv](bl, br, mL, mR, dsend, rsend, l0, r0, d0, e0, li, ri, di, ei);
         return blockPk;
     }
     mixLoop<true, true, true, true>(bl, br, mL, mR, dsend, rsend, l0, r0, d0, e0, li, ri, di, ei);
-    if (tapL) addTap(tapL, tapR, bl, br, !stem);   // [I] resample tap: the slot's post-gain/pan bus, dry
-    if (!stem) return blockPk;
     for (uint32_t i = 0; i < kBlock; ++i) {
         stem[2 * i] = toS16(bl[i]);
         stem[2 * i + 1] = toS16(br[i]);

@@ -262,7 +262,9 @@ bool RecorderScreen::record() {
     // (half the frames of the same memory); every other case is mono.
     const bool stereo = stereoInput();
     if (a.capture.capacityFor(stereo) < 44100) {
-        ui_.ask("Sample Recorder", "Not enough sample memory", nullptr, nullptr, "OK", nullptr, nullptr);
+        // [I] A resample take holds the free memory while it runs.
+        ui_.ask("Sample Recorder", a.bank.reserved() ? "Sample memory is reserved by the resample take" : "Not enough sample memory",
+                nullptr, nullptr, "OK", nullptr, nullptr);
         return false;
     }
     // Count-in and metronome (appendix C §2.9, spec 07 Q10 case 3): only with

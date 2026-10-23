@@ -186,6 +186,10 @@ bool PatternScreen::midiChordEntry(int t, uint8_t note, uint8_t velocity) {
     a.project.setU8(pf::kLastNote, note);
     a.markProjectDirty();
     a.patternEdited();
+    // 2.x: a note into a single cell moves the cursor by the step jump, as
+    // a pad does (user request; stock keeps the cursor). A chord across a
+    // selection fills its tracks on one row and stays.
+    if (r.single()) advance();
     ui_.dirty();
     return true;
 }

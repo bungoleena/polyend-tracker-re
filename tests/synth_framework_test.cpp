@@ -704,6 +704,93 @@ struct RealRig {
         }
     }
 };
+}  // namespace
+
+// User report (2.1.0): step FX Reverb / Delay Send left synth tracks dry
+// (only the slot's send from the synth page worked). They now set the
+// note's own send, on top of / instead of the slot's.
+TEST(synth_step_fx_sends_reach_the_send_buses) {
+    RealRig r(SynthModel::ACD, kSynthEngineAcd);   // slot sends 0 (-inf)
+    double l, d, v;
+    r.on(48);
+    r.run(4, l, d, v);
+    CHECK(l > 0.0);
+    CHECK(d == 0.0 && v == 0.0);   // dry: the slot sends nothing
+    r.bank.applyFx(0, 32, 100);     // Reverb Send 100
+    r.run(8, l, d, v);
+    CHECK(v > 0.01 * l);
+    CHECK(d == 0.0);
+    r.bank.applyFx(0, 30, 50);      // Delay Send 50
+    r.run(8, l, d, v);
+    CHECK(d > 0.0 && v > 0.0);
+    // A Reverb Send FX on the note step itself (the reported case).
+    r.bank.noteOff(0, NoteOffMode::Cut);
+    r.run(4, l, d, v);
+    {
+        SynthNoteOn n;
+        n.slot = 0;
+        n.note = 52;
+        n.fxA.type = 32;
+        n.fxA.value = 80;
+        r.bank.noteOn(0, n);
+    }
+    r.run(8, l, d, v);
+    CHECK(l > 0.0);
+    CHECK(v > 0.01 * l);
+    CHECK(d == 0.0);
+    // The next note starts with the slot's sends again.
+    r.bank.noteOff(0, NoteOffMode::Cut);
+    r.run(4, l, d, v);
+    r.on(50);
+    r.run(4, l, d, v);
+    for (int k = 0; k < 4; ++k) r.block();
+    r.run(4, l, d, v);
+    CHECK(l > 0.0);
+    CHECK(v == 0.0 && d == 0.0);
+}
+
+TEST(synth_step_fx_panning) {
+    // Panning FX on synth notes (0 left, 50 centre, 100 right), on a later
+    // step and on the note step itself; the next plain note is centred.
+    RealRig r(SynthModel::ACD, kSynthEngineAcd);
+    auto lr = [&](double& el, double& er) {
+        el = er = 0.0;
+        for (int k = 0; k < 8; ++k) {
+            r.block();
+            for (uint32_t i = 0; i < kBlock; ++i) {
+                el += double(r.L[i]) * r.L[i];
+                er += double(r.R[i]) * r.R[i];
+            }
+        }
+    };
+    double el, er;
+    r.on(48);
+    lr(el, er);
+    CHECK(el > 0.0 && std::fabs(el - er) < 0.01 * el);   // centred
+    r.bank.applyFx(0, 31, 0);                            // hard left
+    for (int k = 0; k < 2; ++k) r.block();
+    lr(el, er);
+    CHECK(el > 0.0 && er < 1e-9 * el);
+    r.bank.noteOff(0, NoteOffMode::Cut);
+    for (int k = 0; k < 4; ++k) r.block();
+    SynthNoteOn n;
+    n.slot = 0;
+    n.note = 50;
+    n.fxB.type = 31;
+    n.fxB.value = 100;                                   // hard right on the note step
+    r.bank.noteOn(0, n);
+    for (int k = 0; k < 2; ++k) r.block();
+    lr(el, er);
+    CHECK(er > 0.0 && el < 1e-9 * er);
+    r.bank.noteOff(0, NoteOffMode::Cut);
+    for (int k = 0; k < 4; ++k) r.block();
+    r.on(52);
+    for (int k = 0; k < 2; ++k) r.block();
+    lr(el, er);
+    CHECK(el > 0.0 && std::fabs(el - er) < 0.01 * el);
+}
+
+namespace {
 // RMS of an ACD Init note (sustain held) over blocks 8..39 after the note,
 // with the Volume FX vol (-1: none), M7 -> Volume amount a, and an optional
 // Volume FX step at block 8 (fxVol >= 0).

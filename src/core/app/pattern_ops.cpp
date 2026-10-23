@@ -234,7 +234,10 @@ void writeInstrument(Pattern& p, const SelRect& r, uint8_t instr) {
                 if (st.note == kNoteEmpty && plays) st.note = 60;
                 if (st.note < kNoteEmpty && plays) continue;   // specials keep theirs
                 st.instrument = v;
-            } else if (st.note >= 0) {
+            } else if (st.note != kNoteEmpty) {
+                // 2.x: OFF / CUT / FADE steps of the selection take the new
+                // instrument too (user request; stock keeps theirs, so 1.9.x
+                // does), so a re-instrumented live take stays consistent.
                 st.instrument = v;
             }
         }

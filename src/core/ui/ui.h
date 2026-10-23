@@ -324,6 +324,7 @@ public:
 
     // Popups (spec 05 §5.3).
     void notify(const char* text, uint32_t ms = 2000);
+    const char* notice() const { return note_; }   // the current notification text (tests)
     void ask(const char* title, const char* text, const char* l5, const char* l6, const char* l7, AskFn fn,
              void* ctx);
     bool askOpen() const { return askOpen_; }
@@ -474,7 +475,7 @@ public:
 
 private:
     void dispatchButton(uint8_t id, uint8_t state);
-    uint32_t resampleShownAt_ = 0;
+    uint8_t resampleShown_ = 0;   // [I] resample state last noticed (Ui::update)
     void updateLeds();
     // Module key whose entering press is held back for the new screen
     // (Master / Song hold, see dispatchButton).

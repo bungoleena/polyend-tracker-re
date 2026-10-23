@@ -917,6 +917,13 @@ void Ui::deliverEnteringKey(bool asHold) {
 }
 
 void Ui::resampleKey() {
+    // The Sample Recorder's take and the Sample Editor's undo live in the
+    // free bank tail a take would record over: no new take from there.
+    if (app.resampler.state() == Resampler::kIdle && (active_ == kModRecorder || active_ == kModEditor)) {
+        notify(active_ == kModRecorder ? "Resample: not from the Sample Recorder" : "Resample: not from the Sample Editor",
+               3000);
+        return;
+    }
     // Into: Instrument N holding a sample: ask once before the first take
     // that may replace it (App::resampleIntoOk; reset when Into changes).
     const int into = int(app.resampleCfg.into) - 1;
@@ -942,28 +949,34 @@ void Ui::resampleKey() {
         case App::ResampleAction::kNoMemory: notify("Resample: not enough sample memory", 3000); break;
         default: notify("Resample: busy"); break;
     }
-    resampleShownAt_ = 0;   // show the new state now
+    resampleShown_ = 0xFF;   // show the new state now
 }
 
 void Ui::update(uint32_t now) {
     now_ = now;
-    // [I] Live resampling status, refreshed while armed / recording.
-    if (app.resampler.busy() && app.resampler.state() != Resampler::kDone && active_ != kModResample &&
-        now - resampleShownAt_ >= 250) {
-        resampleShownAt_ = now ? now : 1;
+    // [I] Live resampling status: one notice per state change (armed,
+    // armed and playing, recording, stopping), so other notices stay up;
+    // the Resample screen shows the bar count.
+    {
         const Resampler& r = app.resampler;
-        char t[64];
-        if (r.state() == Resampler::kArmed)
-            std::snprintf(t, sizeof(t), app.seq.isPlaying() ? "Resample armed: starts on the next bar"
-                                                            : "Resample armed: starts with Play");
-        else if (r.state() == Resampler::kStopping)
-            std::snprintf(t, sizeof(t), "Resampling: stops at the next bar");
-        else if (r.bars())
-            std::snprintf(t, sizeof(t), "Resampling  bar %lu / %u", static_cast<unsigned long>(r.barsDone() + 1), r.bars());
-        else
-            std::snprintf(t, sizeof(t), "Resampling  bar %lu  (Shift+Sample Rec stops)",
-                          static_cast<unsigned long>(r.barsDone() + 1));
-        notify(t, 600);
+        const Resampler::State st = r.state();
+        const uint8_t key = st == Resampler::kArmed && app.seq.isPlaying() ? 0x80 | st : uint8_t(st);
+        if (key != resampleShown_) {
+            resampleShown_ = key;
+            if (r.busy() && st != Resampler::kDone && active_ != kModResample) {
+                char t[64];
+                if (st == Resampler::kArmed)
+                    std::snprintf(t, sizeof(t), app.seq.isPlaying() ? "Resample armed: starts on the next bar"
+                                                                    : "Resample armed: starts with Play");
+                else if (st == Resampler::kStopping)
+                    std::snprintf(t, sizeof(t), "Resampling: stops at the next bar");
+                else if (r.bars())
+                    std::snprintf(t, sizeof(t), "Resampling %u bar%s", r.bars(), r.bars() == 1 ? "" : "s");
+                else
+                    std::snprintf(t, sizeof(t), "Resampling (Shift+Sample Rec stops)");
+                notify(t);
+            }
+        }
     }
     if (noteUntil_ && int32_t(now - noteUntil_) >= 0) {
         noteUntil_ = 0;

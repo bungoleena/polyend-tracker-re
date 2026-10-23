@@ -2,11 +2,13 @@
 // length, sources, the new instrument, placement on a track, the reserved
 // sample memory and cancelling.
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #include "test.h"
 #include "ui_fakes.h"
 
+#include "app/sample_fx.h"
 #include "formats/wav.h"
 #include "ui/screens.h"
 
@@ -106,6 +108,33 @@ TEST(resample_starts_on_the_next_bar_and_manual_stop_snaps) {
     CHECK(near(a.bank.frames(1), 2 * kBarFrames, 256));
 }
 
+// Bars follow the pattern, as the metronome: a 12-step pattern in 4/4
+// starts a bar on each pass, so a take armed mid-pattern starts with the
+// pattern and a 1-bar take is one pass (12 steps), not 16 steps.
+TEST(resample_bars_follow_the_pattern) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    a.cfg.tsNum = 3;
+    a.cfg.tsDen = 3;
+    a.pattern().tracks[0].lastStep = 11;   // 12 steps
+    a.patternEdited();
+    a.resampleCfg.length = 1;
+    a.seq.play(0);
+    h.audio.pump(blocksFor(0.5));   // step 4 of the first pass
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    int startStep = -1;
+    for (int i = 0; i < 4000 && a.resampler.state() == Resampler::kArmed; ++i) {
+        h.audio.pump(1);
+        if (a.resampler.state() == Resampler::kRecording) startStep = a.seq.step(0);
+    }
+    CHECK_EQ(startStep, 0);
+    for (int i = 0; i < 4000 && a.resampler.state() != Resampler::kDone; ++i) h.audio.pump(1);
+    h.run(5);
+    CHECK(a.instrPresent[1]);
+    CHECK(near(a.bank.frames(1), kBarFrames * 12 / 16, 256));
+}
+
 TEST(resample_places_on_track_with_undo) {
     Harness h;
     App& a = *h.app;
@@ -195,6 +224,147 @@ TEST(resample_track_source_synth) {
     h.run(5);
     CHECK(a.instrPresent[2]);
     CHECK_EQ(peakOf(a, 2), 0);
+}
+
+// The source is the one armed: changing From while the take runs changes
+// neither what is recorded nor the new instrument's name.
+TEST(resample_source_latched_at_arm) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    a.resampleCfg.length = 1;
+    a.resampleCfg.source = 0;   // Master
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    a.seq.play(0);
+    h.audio.pump(blocksFor(1.0));
+    CHECK(a.resampler.state() == Resampler::kRecording);
+    a.resampleCfg.source = 2;   // Track 2 (silent) chosen mid-take
+    h.audio.pump(blocksFor(1.3));
+    h.run(5);
+    CHECK(a.instrPresent[1]);
+    CHECK_STR(a.instruments[1].name, "Resample Master");
+    CHECK_EQ(a.lastResample.source, 0);
+}
+
+// A Track take records only that track's notes on a shared synth slot:
+// track 5 playing Synth 1 is not in a take of track 3 (also on Synth 1).
+TEST(resample_track_source_shared_synth_slot) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    for (int s = 0; s < 64; ++s) a.pattern().tracks[0].steps[s].note = -1;   // the saw off
+    a.setSynthModel(0, int(SynthModel::ACD));
+    for (int s = 0; s < 64; s += 4) {
+        Step& st = a.pattern().tracks[4].steps[s];   // track 5
+        st.note = 60;
+        st.instrument = uint8_t(kFirstSynthInstrument);
+    }
+    a.pattern().tracks[4].lastStep = 63;
+    a.patternEdited();
+    a.resampleCfg.length = 1;
+    a.resampleCfg.source = 3;   // track 3: plays nothing
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    a.seq.play(0);
+    const int heard = h.audio.pump(blocksFor(2.3));
+    h.run(5);
+    CHECK(heard > 1000);   // Synth 1 sounds
+    CHECK(a.instrPresent[1]);
+    CHECK_EQ(peakOf(a, 1), 0);
+    // Track 3 plays Synth 1 at step 0, track 5 from step 8 on (Synth 1 is
+    // mono: track 5's note takes over the same voice record). Track 3's
+    // take holds its note up to step 8 and nothing of track 5's after it.
+    a.seq.stop();
+    for (int s = 0; s < 64; ++s) {
+        a.pattern().tracks[4].steps[s].note = -1;
+        a.pattern().tracks[2].steps[s].note = -1;
+    }
+    for (int s = 8; s < 16; s += 2) {
+        Step& st = a.pattern().tracks[4].steps[s];
+        st.note = 60;
+        st.instrument = uint8_t(kFirstSynthInstrument);
+    }
+    a.pattern().tracks[2].steps[0].note = 48;
+    a.pattern().tracks[2].steps[0].instrument = uint8_t(kFirstSynthInstrument);
+    a.pattern().tracks[2].lastStep = 63;
+    a.patternEdited();
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    a.seq.play(0);
+    h.audio.pump(blocksFor(2.3));
+    h.run(5);
+    CHECK(a.instrPresent[2]);
+    const uint32_t step = kBarFrames / 16;
+    const int16_t* l = a.bank.left(2);
+    int before = 0, after = 0;
+    for (uint32_t i = 0; i < 8 * step; ++i) before = std::abs(l[i]) > before ? std::abs(l[i]) : before;
+    for (uint32_t i = 8 * step + 512; i < a.bank.frames(2); ++i) after = std::abs(l[i]) > after ? std::abs(l[i]) : after;
+    CHECK(before > 1000);
+    CHECK_EQ(after, 0);
+    // Synth 1 polyphonic, track 3 on every step: its take is the same with
+    // or without track 5 playing the slot from step 8.
+    SynthSlotRecord rec = a.project.synthSlot(0);
+    rec.polyphony = 4;
+    a.project.setSynthSlot(0, rec);
+    a.applyEngineSettings();
+    for (int s = 0; s < 16; ++s) {
+        a.pattern().tracks[2].steps[s].note = 49;
+        a.pattern().tracks[2].steps[s].instrument = uint8_t(kFirstSynthInstrument);
+    }
+    int slot = 3;
+    for (int pass = 0; pass < 2; ++pass, ++slot) {
+        for (int s = 8; s < 16; s += 2) a.pattern().tracks[4].steps[s].note = int8_t(pass ? 60 : -1);
+        a.patternEdited();
+        a.seq.stop();
+        h.audio.pump(blocksFor(1.0));
+        CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+        a.seq.play(0);
+        h.audio.pump(blocksFor(2.3));
+        h.run(5);
+        CHECK(a.instrPresent[slot]);
+    }
+    const int16_t* alone = a.bank.left(3);
+    const int16_t* with5 = a.bank.left(4);
+    double e = 0.0, d = 0.0;
+    for (uint32_t i = 0; i < a.bank.frames(3) && i < a.bank.frames(4); ++i) {
+        e += double(alone[i]) * double(alone[i]);
+        d += (double(with5[i]) - double(alone[i])) * (double(with5[i]) - double(alone[i]));
+    }
+    CHECK(e > 0.0);
+    CHECK(d < 0.01 * e);
+}
+
+// The Track tap accumulates in the track's own output (no ISR block
+// buffer); once the take ends, that output must not carry the synth into
+// a later stems export (the silent voice zeroes it only once).
+TEST(resample_track_tap_leaves_no_stale_stem) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    for (int s = 0; s < 64; ++s) a.pattern().tracks[0].steps[s].note = -1;   // the saw off
+    a.setSynthModel(0, int(SynthModel::ACD));
+    for (int s = 0; s < 64; ++s) {
+        Step& st = a.pattern().tracks[2].steps[s];
+        st.note = 48;
+        st.instrument = uint8_t(kFirstSynthInstrument);   // Synth 1 every step
+    }
+    a.pattern().tracks[2].lastStep = 63;
+    a.patternEdited();
+    a.resampleCfg.length = 1;
+    a.resampleCfg.source = 3;
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    a.seq.play(0);
+    for (int i = 0; i < 6000 && a.resampler.state() != Resampler::kDone; ++i) h.audio.pump(1);
+    h.run(5);   // the tap is removed
+    CHECK(a.instrPresent[1]);
+    CHECK(peakOf(a, 1) > 1000);
+    a.seq.stop();
+    std::unique_ptr<audio::StemBlock> st(new audio::StemBlock);
+    int16_t master[audio::kBlock * 2];
+    a.engine.beginOffline();
+    a.engine.renderOfflineBlock(master, st.get());
+    int pk = 0;
+    for (uint32_t i = 0; i < audio::kBlock * 2; ++i) pk = std::abs(st->data[2][i]) > pk ? std::abs(st->data[2][i]) : pk;
+    a.engine.endOffline();
+    CHECK_EQ(pk, 0);
 }
 
 TEST(resample_slot_memory_cancel_and_transport) {
@@ -359,6 +529,26 @@ TEST(resample_screen) {
 
 // #9: the Sample Recorder's Source list routes the codec to a microphone
 // (Mic LG / Mic HG); the Resample screen must route Line in again.
+// Simulator: the mouse wheel scrolls the lists (From, Length, Slices, Into,
+// Place on, Monitor) and moves the Gain value.
+TEST(resample_screen_encoder_on_list) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    a.seq.play(0);
+    h.tap(btn::SampleRecorder);
+    h.tap(btn::F6);
+    CHECK(a.ui.active() == kModResample);
+    a.resampleCfg = ResampleSettings{};
+    ResampleScreen& r = *static_cast<ResampleScreen*>(a.ui.screen(kModResample));
+    for (int c : {0, 1, 2, 3, 4, 6}) {
+        r.sel = c;
+        CHECK(a.ui.encoderOnList());
+    }
+    r.sel = 5;   // Gain
+    CHECK(!a.ui.encoderOnList());
+}
+
 TEST(resample_screen_routes_line_in) {
     Harness h;
     App& a = *h.app;
@@ -416,6 +606,183 @@ TEST(resample_line_in_monitor_and_take) {
     const int slot = 1;
     CHECK(a.instrPresent[slot]);
     CHECK(peakOf(a, slot) > 1000);
+}
+
+// Line in with Monitor Off: the input is kept out of the mix but still
+// recorded (the take taps the input itself); the channel mode applies.
+TEST(resample_line_in_monitor_off_records) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    for (int s = 0; s < 64; ++s) a.pattern().tracks[0].steps[s].note = -1;   // the saw off
+    a.patternEdited();
+    h.lineGen = [](int16_t* b, uint64_t blk) {
+        for (int i = 0; i < 128; ++i) {
+            const int16_t v = int16_t(6000.0f * std::sin(2.0f * 3.14159265f * 1000.0f * float(blk * 128 + uint64_t(i)) / 44100.0f));
+            b[2 * i] = v;
+            b[2 * i + 1] = 0;   // right silent
+        }
+    };
+    h.run(10);
+    a.cfg.recMonitor = 0;   // Monitor Off
+    a.seq.play(0);
+    h.tap(btn::SampleRecorder);
+    h.tap(btn::F6);   // Resample screen
+    CHECK(a.ui.active() == kModResample);
+    a.resampleCfg = ResampleSettings{};
+    a.resampleCfg.length = 1;
+    h.enc(9);   // From: Line in
+    CHECK_EQ(a.resampleCfg.source, audio::AudioEngine::kTapLineIn);
+    CHECK(a.inputMonitorMuted);
+    h.tap(btn::Rec);
+    CHECK(a.resampler.state() == Resampler::kArmed);
+    for (int i = 0; i < 6000 && a.resampler.state() != Resampler::kDone; ++i) h.audio.pump(1);
+    h.run(5);
+    CHECK(a.instrPresent[1]);
+    CHECK(peakOf(a, 1) > 5000);
+    const int16_t* r = a.bank.right(1);
+    int pr = 0;
+    for (uint32_t i = 0; i < a.bank.frames(1); ++i) pr = std::abs(r[i]) > pr ? std::abs(r[i]) : pr;
+    CHECK_EQ(pr, 0);   // stereo: the right input stays silent
+    // Line in channel = Left: the left input on both sides.
+    a.cfg.lineInChannel = 1;
+    a.markConfigDirty();
+    h.tap(btn::Rec);
+    for (int i = 0; i < 6000 && a.resampler.state() != Resampler::kDone; ++i) h.audio.pump(1);
+    h.run(5);
+    CHECK(a.instrPresent[2]);
+    r = a.bank.right(2);
+    pr = 0;
+    for (uint32_t i = 0; i < a.bank.frames(2); ++i) pr = std::abs(r[i]) > pr ? std::abs(r[i]) : pr;
+    CHECK(pr > 5000);
+}
+
+// The Sample Editor's undo data lives in the free bank tail a take records
+// over: Shift + Sample Rec does not arm a take there, and a take armed
+// otherwise drops the undo.
+TEST(resample_vs_editor_undo) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    h.run(10);
+    a.setCurrentInstrument(0);
+    EditorScreen& e = *static_cast<EditorScreen*>(a.ui.screen(kModEditor));
+    a.ui.switchTo(kModEditor);
+    h.run(10);
+    e.effect = sfx::kCrop;
+    e.startM = 0;
+    e.endM = 32767;
+    CHECK(e.apply());
+    CHECK(e.undoAvail);
+    const uint32_t cropped = a.bank.frames(0);
+    CHECK(cropped < 3000u);
+    a.resampleCfg.length = 1;
+    h.down(btn::Shift);
+    h.tap(btn::SampleRecorder);
+    h.up(btn::Shift);
+    CHECK(!a.resampler.busy());
+    CHECK(std::strstr(a.ui.notice(), "Sample Editor") != nullptr);
+    CHECK(e.undoAvail);
+    // Armed some other way (the API): the undo goes.
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    h.run(5);
+    CHECK(!e.undoAvail);
+    CHECK(!e.undo());
+    a.seq.play(0);
+    for (int i = 0; i < 6000 && a.resampler.state() != Resampler::kDone; ++i) h.audio.pump(1);
+    h.run(5);
+    CHECK(a.instrPresent[1]);
+    CHECK(!e.undo());
+    CHECK_EQ(a.bank.frames(0), cropped);   // the crop stays
+}
+
+// The take's status is noticed once per state change, so it does not
+// cover another notice (here the Sample Loader's refusal).
+TEST(resample_status_notice_on_state_change) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    addSaw(h, "kick.wav", 4410);
+    a.resampleCfg.length = 1;
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    h.run(5);
+    CHECK_STR(a.ui.notice(), "Resample armed: starts with Play");
+    h.tap(btn::SampleLoader);
+    LoaderScreen& l = *static_cast<LoaderScreen*>(a.ui.screen(kModLoader));
+    int idx = -1;
+    for (int i = 0; i < l.count; ++i)
+        if (!std::strcmp(l.entries[i], "kick.wav")) idx = i;
+    while (l.sdCursor < idx) h.tap(btn::Down);
+    l.insCursor = 5;
+    h.tap(btn::F1);
+    CHECK(std::strstr(a.ui.notice(), "reserved by the resample take") != nullptr);
+    h.run(600);
+    CHECK(std::strstr(a.ui.notice(), "reserved by the resample take") != nullptr);
+    // Play: the take starts on the bar: one notice for it.
+    a.seq.play(0);
+    h.audio.pump(4);
+    h.run(5);
+    CHECK_STR(a.ui.notice(), "Resampling 1 bar");
+}
+
+// Other users of the free bank tail: a take is not armed over a Sample
+// Recorder recording or a streamed Sample Loader preview, and the Sample
+// Recorder says why it has no memory while a take is armed.
+TEST(resample_busy_with_recorder_and_preview) {
+    Harness h;
+    App& a = *h.app;
+    setup(h);
+    h.lineGen = [](int16_t* b, uint64_t blk) {
+        for (int i = 0; i < 256; ++i) b[i] = int16_t((blk * 128 + uint64_t(i)) % 64 * 200);
+    };
+    h.run(10);
+    h.tap(btn::SampleRecorder);
+    CHECK(a.ui.active() == kModRecorder);
+    h.tap(btn::F8);   // Record
+    h.audio.pump(20);
+    CHECK(a.capture.active());
+    CHECK(a.resampleToggle() == App::ResampleAction::kBusy);
+    h.down(btn::Shift);
+    h.tap(btn::SampleRecorder);
+    h.up(btn::Shift);
+    CHECK(!a.resampler.busy());
+    CHECK(std::strstr(a.ui.notice(), "Sample Recorder") != nullptr);
+    h.tap(btn::F8);   // Stop
+    h.run(5);
+    // A take armed elsewhere: the Sample Recorder's Record says why.
+    h.tap(btn::Pattern);
+    CHECK(a.resampleToggle() == App::ResampleAction::kArmed);
+    h.tap(btn::SampleRecorder);
+    CHECK(a.ui.active() == kModRecorder);
+    h.run(5);
+    h.tap(btn::F8);
+    h.run(5);
+    CHECK(!a.capture.active());
+    CHECK(a.ui.askOpen());
+    CHECK(h.disp.lastHasText("reserved by the resample take"));
+    h.tap(btn::F8);   // OK
+    CHECK(a.resampleToggle() == App::ResampleAction::kCancelled);
+    // A Sample Loader preview streaming into the tail.
+    std::vector<int16_t> s(600000, 12345);
+    std::vector<uint8_t> out(s.size() * 2 + 64);
+    out.resize(wavEncode(s.data(), uint32_t(s.size()), 1, out.data(), out.size()));
+    h.fs.files["long.wav"] = out;
+    h.tap(btn::SampleLoader);
+    LoaderScreen& l = *static_cast<LoaderScreen*>(a.ui.screen(kModLoader));
+    int idx = -1;
+    for (int i = 0; i < l.count; ++i)
+        if (!std::strcmp(l.entries[i], "long.wav")) idx = i;
+    CHECK(idx >= 0);
+    while (l.sdCursor < idx) h.tap(btn::Down);
+    h.down(btn::F3);   // preview while held
+    h.run(10);
+    CHECK(a.engine.previewBufferActive());
+    h.down(btn::Shift);
+    h.tap(btn::SampleRecorder);
+    h.up(btn::Shift);
+    CHECK(!a.resampler.busy());
+    CHECK(std::strstr(a.ui.notice(), "busy") != nullptr);
+    h.up(btn::F3);
 }
 
 // #7: a take holds all free sample memory; adding a sample in the Sample

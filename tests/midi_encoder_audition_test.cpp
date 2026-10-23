@@ -42,6 +42,7 @@ TEST(encoder_audition_does_not_block_midi_step_entry) {
     // Put a note in the cursor cell with the keyboard, as any user would.
     noteOn(h, 60);
     noteOff(h, 60);
+    h.tap(btn::Up);   // 2.x: the single-cell note moved the cursor down one step
     CHECK_EQ(int(a.pattern().tracks[0].steps[0].note), 60);
     // Nudge the note encoder once (edit mode, Note column): audition on the
     // cursor track with voice kAuditionEncoder ... which is never released.
@@ -85,6 +86,7 @@ TEST(encoder_audition_does_not_shift_a_chord_selection) {
     PatternScreen& p = pe(h);
     noteOn(h, 60);
     noteOff(h, 60);
+    h.tap(btn::Up);   // 2.x: the single-cell note moved the cursor down one step
     h.enc(1);
     CHECK_EQ(a.auditionTrack(App::kAuditionEncoder), 0);
     h.tap(btn::Down);
