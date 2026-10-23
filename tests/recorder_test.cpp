@@ -458,3 +458,56 @@ TEST(recorder_radio_source_powers_tuner_routes_input_and_records) {
     h.tap(btn::Pattern);
     CHECK_EQ(route.last, 0);
 }
+
+TEST(recorder_name_readable_on_every_theme) {
+    // Monochrome's name box is the light title band (b9b9ba): the name is
+    // drawn in its title text (black), not the light list grey. Original and
+    // Anniversary keep their list text on the dark box.
+    const char* want[3] = {"COLOR FFFFFF", "COLOR 000000", "COLOR C9C9CA"};
+    for (int t = 0; t < 3; ++t) {
+        Harness h;
+        h.app->cfg.theme = uint8_t(t);
+        toneBlocks(h, 0, 1000);
+        h.tap(btn::SampleRecorder);
+        recordSome(h, 40);
+        h.tap(btn::F8);   // Save -> naming keyboard
+        CHECK(h.app->ui.kb.isOpen());
+        h.run(40);
+        std::string colour;
+        bool found = false;
+        for (auto& l : h.disp.last) {
+            if (l.compare(0, 6, "COLOR ") == 0) colour = l;
+            if (l.compare(0, 5, "TEXT ") == 0 && l.find("\"recording001\"") != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+        CHECK(found);
+        CHECK_STR(colour.c_str(), want[t]);
+    }
+}
+
+TEST(recorder_monitor_only_on_setup_and_while_recording) {
+    // Owner request: after a take the input (radio, line) no longer plays
+    // under Preview / the pads in the edit view; it monitors on the setup
+    // page and while recording.
+    Harness h;
+    App& a = *h.app;
+    a.cfg.recMonitor = 1;
+    toneBlocks(h, 0, 1000);
+    h.tap(btn::SampleRecorder);
+    h.run(20);
+    CHECK(!a.inputMonitorMuted);   // setup page
+    h.tap(btn::F8);                // Record
+    h.run(20);
+    CHECK(!a.inputMonitorMuted);   // recording
+    h.lineBlocks = 0;
+    h.audio.pump(30);
+    h.tap(btn::F8);                // Stop -> edit view
+    h.run(20);
+    CHECK_EQ(rec(h).state, 1);
+    CHECK(a.inputMonitorMuted);
+    h.tap(btn::F7);                // Cancel -> setup again
+    h.run(20);
+    if (rec(h).state == 0) CHECK(!a.inputMonitorMuted);
+}

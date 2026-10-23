@@ -447,3 +447,27 @@ TEST(sample_screens_own_midi_notes) {
     CHECK_EQ(busyTracks(a), 1);
     noteOff(h, 60);
 }
+
+// Pattern Instr column, not editing: a pad picks instrument k and auditions
+// it at note 60, not at the pad's note (user report 2.0.6: each instrument
+// one semitone higher).
+TEST(instr_column_pad_auditions_at_note_60) {
+    Harness h;
+    App& a = *h.app;
+    a.cfg.midiOut = 3;
+    PatternScreen& p = pe(h);
+    p.track = 8;   // MIDI track 9: the pads pick MIDI instruments (note-ons visible)
+    a.editorTrack = 8;
+    p.col = 1;
+    for (uint8_t pad = 0; pad < 4; ++pad) {
+        h.midi.sent.clear();
+        h.push(InputEvent::kPadDown, pad);
+        h.run(5);
+        int note = -1;
+        for (size_t i = 0; i + 2 < h.midi.sent.size(); ++i)
+            if ((h.midi.sent[i] & 0xF0) == 0x90 && h.midi.sent[i + 2]) note = h.midi.sent[i + 1];
+        CHECK_EQ(note, 60);
+        h.push(InputEvent::kPadUp, pad);
+        h.run(5);
+    }
+}

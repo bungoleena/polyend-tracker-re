@@ -10,6 +10,7 @@
 #include "ui_fakes.h"
 #include "nvstore_fake.h"
 
+#include "app/instrument_edit.h"
 #include "app/perf_presets.h"
 
 #include "app/project_fields.h"
@@ -345,4 +346,99 @@ TEST(perf_label_colours_and_live_cell_on_top) {
     for (auto& l : r.h.disp.last)
         if (l.find("TEXT") == 0 && l.find("\"+25\"") != std::string::npos && l.find(" 53 ") != std::string::npos) top = true;
     CHECK(top);
+}
+
+TEST(automation_destination_and_type_up_moves_up) {
+    // User report: on Instrument Automation 2/2, Up/Down were reversed in
+    // the Destination and Type lists. Down moves down the list (Volume ->
+    // Panning, Off -> Envelope), Up moves back up.
+    Harness h;
+    App& a = *h.app;
+    a.setCurrentInstrument(0);
+    h.tap(btn::InstrParams);
+    auto& s = *static_cast<InstrumentScreen*>(a.ui.screen(kModInstrument));
+    if (s.mode != 1) h.tap(btn::InstrParams);
+    CHECK_EQ(s.mode, 1);
+    s.column = 0;
+    s.dest = 0;
+    h.tap(btn::Down);
+    CHECK_EQ(s.dest, 1);
+    h.tap(btn::Up);
+    CHECK_EQ(s.dest, 0);
+    s.column = 1;
+    const int t0 = iedit::autoType(a.instruments[0], 0);
+    h.tap(btn::Down);
+    CHECK_EQ(iedit::autoType(a.instruments[0], 0), t0 + 1);
+    h.tap(btn::Up);
+    CHECK_EQ(iedit::autoType(a.instruments[0], 0), t0);
+}
+
+TEST(automation_volume_lfo_speed_list_starts_at_24_steps) {
+    // Stock 1.9.2: the Volume LFO speeds run 24 steps .. 1/64 step, so its
+    // Speed list starts at "24 steps"; the other destinations list 128..
+    Harness h;
+    App& a = *h.app;
+    a.setCurrentInstrument(0);
+    h.tap(btn::InstrParams);
+    auto& s = *static_cast<InstrumentScreen*>(a.ui.screen(kModInstrument));
+    if (s.mode != 1) h.tap(btn::InstrParams);
+    for (int d = 0; d < 2; ++d) {
+        CHECK(iedit::set(a.instruments[0], InstrParam::AutoType, d, 2));   // LFO
+        s.dest = d;
+        s.column = 3;
+        a.ui.dirty();
+        h.run(60);
+        CHECK(h.disp.lastHasText("24 steps"));
+        CHECK_EQ(h.disp.lastHasText("128 steps"), d != 0);
+        CHECK_EQ(h.disp.lastHasText("32 steps"), d != 0);
+    }
+}
+
+TEST(confirm_popup_hides_the_bar_selector) {
+    // User report: "Slices will be rewritten" on Sample Playback drew
+    // Cancel / Confirm over the screen's own "Play Mode" selector. While a
+    // confirmation is open only its labels are in the bar.
+    Harness h;
+    App& a = *h.app;
+    a.setCurrentInstrument(1);
+    h.tap(btn::SamplePlayback);
+    h.run(60);
+    CHECK(h.disp.lastHasText("Play Mode"));
+    a.ui.ask("Slices will be rewritten", "Do you want to continue?", nullptr, "Cancel", "Confirm",
+             [](void*, int) {}, nullptr);
+    h.run(60);
+    CHECK(h.disp.lastHasText("Confirm"));
+    CHECK(!h.disp.lastHasText("Play Mode"));
+}
+
+TEST(song_undo_without_data_shows_stock_text) {
+    // Stock 1.9.2 (checked on the device): Song Undo with nothing to undo
+    // shows "No undo data :(" (slot add/delete is not undoable there either).
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Song);
+    h.tap(btn::Rec);    // edit mode
+    h.tap(btn::F3);     // Undo
+    h.run(60);
+    CHECK(h.disp.lastHasText("No undo data :("));
+    (void)a;
+}
+
+TEST(automation_lfo_shape_up_moves_up) {
+    // User report: with Type = LFO, Up/Down were reversed in the Shape list
+    // (Rev saw, Saw, Triangle, Square, Random from the top).
+    Harness h;
+    App& a = *h.app;
+    a.setCurrentInstrument(0);
+    h.tap(btn::InstrParams);
+    auto& s = *static_cast<InstrumentScreen*>(a.ui.screen(kModInstrument));
+    if (s.mode != 1) h.tap(btn::InstrParams);
+    CHECK(iedit::set(a.instruments[0], InstrParam::AutoType, 0, 2));   // LFO
+    s.dest = 0;
+    s.column = 2;
+    const int sh0 = iedit::get(a.instruments[0], InstrParam::AutoAttackShape, 0);
+    h.tap(btn::Down);
+    CHECK_EQ(iedit::get(a.instruments[0], InstrParam::AutoAttackShape, 0), sh0 + 1);
+    h.tap(btn::Up);
+    CHECK_EQ(iedit::get(a.instruments[0], InstrParam::AutoAttackShape, 0), sh0);
 }

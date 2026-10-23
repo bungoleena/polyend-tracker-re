@@ -151,7 +151,7 @@ TEST(undo_redo) {
     // Nothing more to redo -> notification, no change.
     h.tap(btn::F7);
     CHECK(a.pattern().tracks[0].steps[0].note == 36);
-    CHECK(h.disp.lastHasText("Nothing to redo"));
+    CHECK(h.disp.lastHasText("No redo data."));
 }
 
 TEST(pattern_length_and_ops) {

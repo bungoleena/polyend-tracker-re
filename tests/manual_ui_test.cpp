@@ -353,3 +353,236 @@ TEST(render_and_load_opens_sample_loader) {
     LoaderScreen& l = *static_cast<LoaderScreen*>(a.ui.screen(kModLoader));
     CHECK_EQ(l.insCursor, int(a.currentInstrument()));
 }
+
+// File > Open Project and Import Mod list up to ProjectBrowser::kMaxEntries
+// (80 like stock, spec 05 appendix E1.2; 2.x: 200). User report: the list
+// stopped at 64.
+TEST(file_lists_hold_80_entries) {
+    Harness h;
+    h.fs.dirs.insert("Projects");
+    h.fs.dirs.insert("Mod");
+    for (int i = 0; i < 210; ++i) {
+        char p[64];
+        std::snprintf(p, sizeof p, "Projects/Song %03d", i);
+        h.fs.dirs.insert(p);
+        std::snprintf(p, sizeof p, "Projects/Song %03d/project.mt", i);
+        h.fs.files[p] = std::vector<uint8_t>(64, 0);
+        std::snprintf(p, sizeof p, "Mod/tune%03d.mod", i);
+        h.fs.files[p] = std::vector<uint8_t>(2048, 0);
+    }
+    auto& f = *static_cast<FileScreen*>(h.app->ui.screen(kModFile));
+    h.tap(btn::File);
+    h.tap(btn::F2);   // Open Project
+    CHECK_EQ(f.state, 1);
+    std::printf("  open list %d entries\n", f.count);
+    CHECK_EQ(f.count, ProjectBrowser::kMaxEntries);
+    f.state = 0;      // back to the File page
+    f.count = 0;
+    h.tap(btn::F3);   // Import Mod
+    CHECK_EQ(f.state, 2);
+    std::printf("  mod list %d entries (state %d)\n", f.count, f.state);
+    CHECK_EQ(f.count, ProjectBrowser::kMaxEntries);
+}
+
+TEST(pattern_stop_keeps_the_cursor_on_the_stop_row) {
+    // User report (stock 1.9.2): Play, then Play again to stop -- the cursor
+    // stays on the row where playback stopped instead of jumping to the top.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Pattern);
+    auto& p = *static_cast<PatternScreen*>(a.ui.screen(kModPattern));
+    CHECK(!a.editMode);
+    h.tap(btn::Play);
+    CHECK(a.seq.isPlaying());
+    for (int i = 0; i < 300; ++i) {   // ~1.7 s at 130 BPM
+        h.audio.pump(3);
+        h.run(10);
+    }
+    const int row = a.seq.step(0);
+    CHECK(row > 4);
+    h.tap(btn::Play);
+    CHECK(!a.seq.isPlaying());
+    h.run(60);
+    CHECK(p.step >= row && p.step <= row + 1);
+}
+
+TEST(pattern_tap_alone_leaves_the_column_view) {
+    // Manual Quick Reference / user report: Pattern + Note shows the Note
+    // column of 8 tracks; pressing Pattern alone goes back to the 4-track view.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Pattern);
+    auto& p = *static_cast<PatternScreen*>(a.ui.screen(kModPattern));
+    CHECK_EQ(p.colMask, 0);
+    h.down(btn::Pattern);
+    h.tap(btn::Note);
+    h.up(btn::Pattern);
+    h.run(60);
+    CHECK_EQ(p.colMask, 1);   // the combo keeps the view
+    h.tap(btn::Pattern);
+    h.run(60);
+    CHECK_EQ(p.colMask, 0);   // Pattern alone: full view
+    // Two columns, then Pattern alone again.
+    h.down(btn::Pattern);
+    h.tap(btn::Note);
+    h.tap(btn::Fx1);
+    h.up(btn::Pattern);
+    CHECK_EQ(p.colMask, 1 | 4);
+    h.tap(btn::Pattern);
+    CHECK_EQ(p.colMask, 0);
+}
+
+TEST(encoder_on_list_hint_for_the_simulator_wheel) {
+    // The simulator flips its mouse wheel on lists (Ui::encoderOnList):
+    // lists, options and rows are lists; value bars are not.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Config);
+    CHECK(a.ui.encoderOnList());   // categories / options
+    h.tap(btn::Pattern);
+    CHECK(!a.editMode);
+    CHECK(a.ui.encoderOnList());   // rows while stopped, not editing
+    h.tap(btn::Rec);
+    CHECK(!a.ui.encoderOnList());  // edit mode: the encoder changes values
+    h.tap(btn::Rec);
+    a.setCurrentInstrument(0);
+    h.tap(btn::InstrParams);
+    auto& s = *static_cast<InstrumentScreen*>(a.ui.screen(kModInstrument));
+    s.mode = 0;
+    s.effects = false;
+    s.column = 0;
+    CHECK(!a.ui.encoderOnList());  // Volume bar
+    s.column = 4;
+    CHECK(a.ui.encoderOnList());   // filter type list
+    h.tap(btn::SampleLoader);
+    CHECK(a.ui.encoderOnList());
+}
+
+TEST(pattern_preview_plays_the_row_once) {
+    // Stock 1.9.2 (owner check): Preview on a cell plays that row once and
+    // stops; the cursor is free again. It looped before and held the cursor.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Pattern);
+    auto& p = *static_cast<PatternScreen*>(a.ui.screen(kModPattern));
+    p.step = 8;
+    h.tap(btn::F5);   // Preview
+    CHECK(a.seq.isPlaying());
+    for (int i = 0; i < 100 && a.seq.isPlaying(); ++i) {
+        h.audio.pump(3);
+        h.run(10);
+    }
+    CHECK(!a.seq.isPlaying());
+    const int row = p.step;
+    h.tap(btn::Down);
+    CHECK_EQ(p.step, row + 1);
+}
+
+namespace {
+// y of the song progress line: a 2-row RECTS box starting at x 5 in the
+// grid's first row band (92..118), or -1.
+int songProgressY(Harness& h) {
+    int last = -1;
+    for (size_t i = 0; i + 1 < h.disp.last.size(); ++i) {
+        int x0, y0, x1, y1;
+        if (std::sscanf(h.disp.last[i].c_str(), "VERTEX %d %d", &x0, &y0) == 2 &&
+            std::sscanf(h.disp.last[i + 1].c_str(), "VERTEX %d %d", &x1, &y1) == 2 && x0 == 5 && x1 > 400 &&
+            y1 - y0 == 1 && y0 >= 92 && y0 <= 118)
+            last = y0;
+    }
+    return last;
+}
+}  // namespace
+
+TEST(song_progress_line_follows_the_playing_pattern) {
+    // User report (Tracker+ / stock photo): during song playback a
+    // horizontal line moves down through the playing slot's grid row.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Song);
+    h.tap(btn::F2);   // Play Song
+    CHECK(a.seq.isPlaying());
+    auto playTo = [&](int step) {
+        for (int i = 0; i < 2000 && a.seq.step(0) < step; ++i) {
+            h.audio.pump(1);
+            h.run(2);
+        }
+        a.ui.dirty();
+        h.run(30);
+    };
+    playTo(4);
+    const int y1 = songProgressY(h);
+    playTo(24);
+    const int y2 = songProgressY(h);
+    CHECK(y1 >= 92);
+    CHECK(y2 > y1 + 10);
+    h.tap(btn::F2);   // Stop
+    h.run(60);
+    a.ui.dirty();
+    h.run(30);
+    CHECK_EQ(songProgressY(h), -1);
+}
+
+TEST(song_loop_flag_ends_with_its_play_run) {
+    // Stock photos: the title shows the loop arrow only while Shift+Play loops
+    // a pattern in the song; a later plain pattern play shows the triangle,
+    // even when the loop was stopped from another screen.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Song);
+    auto& s = *static_cast<SongScreen*>(a.ui.screen(kModSong));
+    h.tap(btn::F2);   // play song
+    h.audio.pump(20);
+    h.run(20);
+    h.down(btn::Shift);
+    h.tap(btn::Play);   // Loop Pattern (deferred to the next step)
+    h.up(btn::Shift);
+    for (int i = 0; i < 200 && !s.loopingInSong(); ++i) {
+        h.audio.pump(1);
+        h.run(5);
+    }
+    CHECK(s.loopingInSong());
+    h.tap(btn::Pattern);
+    h.tap(btn::Play);   // stop from the Pattern screen
+    CHECK(!a.seq.isPlaying());
+    h.run(20);
+    h.tap(btn::Play);   // plain pattern play
+    CHECK(a.seq.isPlaying());
+    CHECK(!s.loopingInSong());
+    h.tap(btn::Play);
+}
+
+TEST(song_headers_show_track_names) {
+    // User report / stock photo: a renamed track shows its name on the Song
+    // page (it kept "Track X").
+    Harness h;
+    App& a = *h.app;
+    a.project.setTrackName(1, "Bass");
+    h.tap(btn::Song);
+    a.ui.dirty();
+    h.run(40);
+    bool bass = false, track2 = false;
+    for (auto& l : h.disp.last) {
+        if (l.find("\"Bass\"") != std::string::npos) bass = true;
+        if (l.find("\"Track\"") != std::string::npos) track2 = true;   // the other tracks keep "Track N"
+    }
+    CHECK(bass);
+    CHECK(track2);
+}
+
+TEST(track_mixer_meters_restart_empty) {
+    // User report: peak-hold marks from an earlier visit stayed on the Track
+    // Mixer after the song was stopped elsewhere; the page opens empty.
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Master);
+    h.tap(btn::Master);   // Track Mixer 2/3
+    auto& m = *static_cast<MixerScreen*>(a.ui.screen(kModMaster));
+    m.meter[0] = 60;
+    m.meterHold[0] = 70;
+    h.tap(btn::Pattern);
+    h.tap(btn::Master);
+    h.tap(btn::Master);
+    CHECK_EQ(m.meter[0], 0);
+    CHECK_EQ(m.meterHold[0], 0);
+}

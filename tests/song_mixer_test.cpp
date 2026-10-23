@@ -334,3 +334,51 @@ TEST(global_mixer_solo_toggle) {
     h.up(btn::Shift);
     for (int i = 0; i < 4; ++i) CHECK_STR(a.ui.bar.label[i].bottom, "Mute");
 }
+
+#include "formats/wav.h"
+
+// Global Mixer 3/3 meters show each channel's level (they rested at 0): a
+// note with delay and reverb sends moves Dry, Delay and Reverb, Line In
+// stays at 0 without input.
+TEST(global_mixer_meters_follow_the_buses) {
+    Harness h;
+    App& a = *h.app;
+    std::vector<int16_t> s(88200);
+    for (size_t i = 0; i < s.size(); ++i) s[i] = int16_t(20000.0 * std::sin(double(i) * 0.06));
+    std::vector<uint8_t> f(s.size() * 2 + 64);
+    f.resize(wavEncode(s.data(), uint32_t(s.size()), 1, f.data(), f.size()));
+    h.fs.files["tone.wav"] = f;
+    CHECK(a.importSample("tone.wav", 0));
+    a.instruments[0].delaySend = 100;
+    a.instruments[0].reverbSend = 100;
+    a.markInstrumentDirty(0, false);
+    a.pattern().tracks[0].steps[0].note = 60;
+    a.pattern().tracks[0].steps[0].instrument = 0;
+    a.patternEdited();
+    h.tap(btn::Master);
+    h.tap(btn::Master);
+    h.tap(btn::Master);
+    MixerScreen& m = mixer(h);
+    CHECK_EQ(m.page, 2);
+    a.seq.play();
+    int mx[4][2] = {};
+    uint32_t acc = 0;
+    for (uint32_t t = 0; t < 1500; t += 10) {
+        acc += 10u * 44100u;
+        int blocks = 0;
+        while (acc >= 128000u) {
+            acc -= 128000u;
+            ++blocks;
+        }
+        h.audio.pump(blocks);
+        h.run(10);
+        for (int c = 0; c < 4; ++c)
+            for (int sd = 0; sd < 2; ++sd) mx[c][sd] = std::max(mx[c][sd], m.globalMeter[c][sd]);
+    }
+    std::printf("  global meters: delay %d/%d reverb %d/%d dry %d/%d line %d/%d\n", mx[0][0], mx[0][1], mx[1][0], mx[1][1],
+                mx[2][0], mx[2][1], mx[3][0], mx[3][1]);
+    CHECK(mx[0][0] > 0 && mx[0][1] > 0);   // delay
+    CHECK(mx[1][0] > 0 && mx[1][1] > 0);   // reverb
+    CHECK(mx[2][0] > 0 && mx[2][1] > 0);   // dry
+    CHECK_EQ(mx[3][0] + mx[3][1], 0);      // no line input
+}

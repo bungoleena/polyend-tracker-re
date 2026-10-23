@@ -291,3 +291,59 @@ TEST(sample_screens_display_list_budget) {
     CHECK_EQ(int(a.instruments[0].playMode), 1);
     CHECK(a.ui.lastDlWords() < 2048);
 }
+
+// Pads in the Sample Editor audition the sample being edited (the processed
+// selection, like Preview), not the instrument through the Sample Playback
+// points and envelope; releasing the pad stops it at once (user report).
+TEST(editor_pads_audition_the_edit) {
+    Harness h;
+    App& a = *h.app;
+    addNoise(h, "n.wav", 30000);
+    CHECK(a.importSample("n.wav", 0));
+    a.setCurrentInstrument(0);
+    h.tap(btn::SampleEditor);
+    EditorScreen& e = ed(h);
+    CHECK(!e.inert);
+    h.push(InputEvent::kPadDown, 5);
+    h.run(10);
+    CHECK(a.engine.previewBufferActive());   // the edit preview plays
+    CHECK(e.previewPlaying);
+    bool trackVoice = false;
+    for (int t = 0; t < 8; ++t) trackVoice |= a.engine.voice(t).active();
+    CHECK(!trackVoice);                      // not the instrument on a track voice
+    h.push(InputEvent::kPadUp, 5);
+    h.run(10);
+    CHECK(!a.engine.previewBufferActive());  // cut on release
+    CHECK(!e.previewPlaying);
+}
+
+// Moving a marker after a preview: the next preview plays the new selection
+// in full, from the new start (user report 2.0.7: moving Start cut the same
+// amount off the end of the audition).
+TEST(editor_preview_follows_moved_markers) {
+    Harness h;
+    App& a = *h.app;
+    const auto src = addNoise(h, "n.wav", 40000);
+    CHECK(a.importSample("n.wav", 0));
+    a.setCurrentInstrument(0);
+    h.tap(btn::SampleEditor);
+    EditorScreen& e = ed(h);
+    e.effect = 1;   // Crop: the preview is the selection itself
+    h.push(InputEvent::kPadDown, 0);
+    h.run(10);
+    h.push(InputEvent::kPadUp, 0);
+    h.run(10);
+    e.startM = 30000;   // move Start to ~46 %
+    h.push(InputEvent::kPadDown, 0);
+    h.run(10);
+    const uint32_t len = a.bank.frames(0);
+    const uint32_t s0 = uint32_t(uint64_t(e.startM) * len / 65535), s1 = uint32_t(uint64_t(e.endM) * len / 65535);
+    CHECK_EQ(a.engine.previewBufferAvail(), s1 - s0);   // the whole new selection
+    const int16_t* played = a.bank.tail();
+    const int16_t* cur = a.bank.data(0);
+    bool same = true;
+    for (uint32_t i = 0; same && i < 200; ++i) same = played[i] == cur[s0 + i];
+    CHECK(same);                                       // from the new start
+    h.push(InputEvent::kPadUp, 0);
+    h.run(10);
+}

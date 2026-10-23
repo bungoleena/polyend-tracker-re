@@ -132,6 +132,11 @@ class RecordingDisplay : public ot::IDisplay {
 public:
     std::vector<std::string> cur, last;
     int swaps = 0;
+    // Device feedback a test can inject (IDisplay::frameFaultCount /
+    // measuredDlBytes; 0 = unknown, like the host).
+    uint32_t faultCount = 0, measuredBytes = 0;
+    uint32_t frameFaultCount() const override { return faultCount; }
+    uint32_t measuredDlBytes() const override { return measuredBytes; }
     uint16_t width() const override { return 800; }
     uint16_t height() const override { return 480; }
     void dlStart() override { cur.clear(); }

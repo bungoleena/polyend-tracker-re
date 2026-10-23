@@ -320,14 +320,14 @@ TEST(text_rotated_uses_bitmap_transform) {
     g.textRotated(100, 200, kFont3, 0xFFFFFF, "AB", 1);
     CHECK(logged(d, "SAVE"));
     CHECK(logged(d, "SIZE 5 19 10"));
-    CHECK(logged(d, "XF 0 -256 2560 256 0 0"));
+    CHECK(logged(d, "XF 0 -256 2432 256 0 0"));
     CHECK(logged(d, "V 100 207 5 65"));   // y = 200 + 17 - 0 - 10
     CHECK(logged(d, "V 100 198 5 66"));   // y = 200 + 17 - 9 - 10
     CHECK(logged(d, "RESTORE"));
     CHECK(d.log.back() == "SIZE 5 10 19");  // cell size restored after the context
     d.log.clear();
     g.textRotated(600, 100, kFont3, 0xFFFFFF, "A", 3);
-    CHECK(logged(d, "XF 0 256 0 -256 0 4864"));
+    CHECK(logged(d, "XF 0 256 0 -256 0 4736"));
     CHECK(logged(d, "TX 6400"));
     CHECK(logged(d, "V 200 100 5 65"));
     // Icons come from the icon sheet when custom fonts are bound.

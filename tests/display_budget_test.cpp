@@ -743,3 +743,57 @@ TEST(pattern_record_wait_blinks) {
     h.run(600);
     CHECK(!h.disp.lastHasText("REC"));
 }
+
+// Device RAM_DL feedback (user report: Master -> Track Mixer froze on one
+// unit). A frame the FT81x faulted on is redrawn in low detail instead of
+// faulting again forever, and a measured RAM_DL size larger than the
+// estimate tightens the guard.
+TEST(device_fault_falls_back_to_low_detail) {
+    Harness::dlOverflowFatal = false;   // the fault and the cut are expected here
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Master);
+    h.tap(btn::Master);   // Track Mixer 2/3
+    h.run(100);
+    const uint32_t low0 = a.ui.lowDetailFrames();
+    CHECK_EQ(a.ui.dlScale(), 64);
+    ++h.disp.faultCount;   // the last frame faulted on the device
+    a.ui.dirty();
+    h.run(50);
+    CHECK_EQ(a.ui.hwFaultFrames(), 1u);
+    CHECK(a.ui.lowDetailFrames() > low0);   // redrawn in low detail
+    CHECK(a.ui.dlScale() > 64);
+    CHECK(a.ui.lowDetail());
+    Harness::dlOverflowFatal = true;
+}
+
+TEST(device_measurement_calibrates_the_guard) {
+    Harness::dlOverflowFatal = false;
+    Harness h;
+    App& a = *h.app;
+    h.tap(btn::Master);
+    h.tap(btn::Master);   // Track Mixer 2/3, a steady heavy screen
+    for (int i = 0; i < 5; ++i) {
+        a.ui.dirty();
+        h.run(30);
+    }
+    const uint32_t est = a.ui.lastDlWords();
+    CHECK(est > 1000);
+    // The device reports 1.5x the estimate (+ the driver's words).
+    h.disp.measuredBytes = (est * 3 / 2 + Ui::kDriverDlWords) * 4;
+    a.ui.dirty();
+    h.run(30);
+    CHECK(a.ui.dlScale() >= 90 && a.ui.dlScale() <= 100);   // ~1.5 x 64
+    // The guard now caps the frame at ~1340 words: the page still draws
+    // (no fault possible), in low detail.
+    const uint32_t over0 = a.ui.overBudgetFrames();
+    a.ui.dirty();
+    h.run(30);
+    CHECK(a.ui.overBudgetFrames() > over0 || a.ui.lowDetail());
+    // No measurement on the host keeps the scale at 1.0 (other tests).
+    Harness h2;
+    h2.tap(btn::Master);
+    h2.run(100);
+    CHECK_EQ(h2.app->ui.dlScale(), 64);
+    Harness::dlOverflowFatal = true;
+}

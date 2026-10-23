@@ -589,3 +589,56 @@ TEST(loader_sd_preview_plays_pti) {
         CHECK(!a.engine.previewBufferActive());
     }
 }
+
+// User report: with Preview held, Down to the next SD file must audition it
+// (the instrument list already did; the SD list kept the old file / went quiet).
+TEST(loader_sd_preview_follows_the_cursor) {
+    Harness h;
+    App& a = *h.app;
+    std::vector<int16_t> quiet(44100, 40), loud(44100);
+    for (size_t i = 0; i < loud.size(); ++i) loud[i] = int16_t((i / 50) % 2 ? 12000 : -12000);
+    putWavCh(h, "a_quiet.wav", quiet, 1);
+    putWavCh(h, "b_loud.wav", loud, 1);
+    h.tap(btn::SampleLoader);
+    CHECK(selectSd(h, "a_quiet.wav") >= 0);
+    h.down(btn::F3);
+    CHECK(a.engine.previewBufferActive());
+    CHECK(h.audio.pump(4) < 1000);   // the quiet file
+    h.tap(btn::Down);                // to b_loud.wav, Preview still held
+    h.run(50);
+    CHECK(a.engine.previewBufferActive());
+    CHECK(h.audio.pump(8) > 5000);   // the loud file plays now
+    h.up(btn::F3);
+    CHECK(!a.engine.previewBufferActive());
+}
+
+// User report (stock behaviour per the Polyend forum): loading a sample into
+// an existing instrument keeps its settings; only the audio and name change.
+TEST(import_into_existing_instrument_keeps_its_settings) {
+    Harness h;
+    App& a = *h.app;
+    std::vector<int16_t> s1(20000, 1000), s2(30000, -1000);
+    putWavCh(h, "chord_a.wav", s1, 1);
+    putWavCh(h, "chord_b.wav", s2, 1);
+    CHECK(a.importSample("chord_a.wav", 2));
+    Instrument& in = a.instruments[2];
+    in.volume = 33;
+    in.tune = 7;
+    in.filterEnabled = 1;
+    in.cutoff = 0.4f;
+    in.reverbSend = 55;
+    in.playMode = uint8_t(PlayMode::ForwardLoop);
+    in.env[0].releaseMs = 1234;
+    CHECK(a.importSample("chord_b.wav", 2));
+    CHECK_STR(a.instruments[2].name, "chord_b");
+    CHECK_EQ(a.instruments[2].lengthFrames, 30000u);
+    CHECK_EQ(int(a.instruments[2].volume), 33);
+    CHECK_EQ(int(a.instruments[2].tune), 7);
+    CHECK_EQ(int(a.instruments[2].filterEnabled), 1);
+    CHECK_EQ(int(a.instruments[2].reverbSend), 55);
+    CHECK_EQ(int(a.instruments[2].playMode), int(PlayMode::ForwardLoop));
+    CHECK_EQ(int(a.instruments[2].env[0].releaseMs), 1234);
+    // An empty slot still starts from the defaults.
+    CHECK(a.importSample("chord_a.wav", 5));
+    CHECK_EQ(int(a.instruments[5].volume), 50);
+}
