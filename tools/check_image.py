@@ -9,11 +9,14 @@ Checks an Intel HEX image for:
     rest of program flash and FlexNVM may hold data the update bootloader or the device
     identity relies on, so nothing may be written there.
   * Only record types 00 (data), 01 (EOF) and 02 (segment address) are used, like stock.
+  * The image ends on a 4 KB sector boundary and its last sector holds only zeros: the
+    update bootloader can leave that sector unwritten (src/hal/opentracker.ld .flashpad).
 Usage: check_image.py <image.hex>
 """
 import sys
 
 STOCK_END = 0xD6460
+SECTOR = 4096
 ALLOWED_RECORDS = {0, 1, 2}
 
 def load_ihex(path):
@@ -58,6 +61,8 @@ if not (reset & 1) or not (0x40 <= (reset & ~1) < top and not (0x400 <= (reset &
     errors.append(f"reset vector 0x{reset:08x} not a Thumb address inside the image")
 if top > STOCK_END:
     errors.append(f"image end 0x{top:x} beyond stock extent 0x{STOCK_END:x}")
+if top % SECTOR or any(byte(a) for a in range(top - SECTOR, top)):
+    errors.append(f"image end 0x{top:x}: last {SECTOR}-byte sector is not all padding (zeros)")
 if min(mem) < 0:
     errors.append("negative address")
 if types - ALLOWED_RECORDS:
