@@ -5,6 +5,9 @@
 
 #include "audio/dsp.h"
 #include "audio/engine.h"
+#include "audio/engines/acd.h"
+#include "audio/synth_engine.h"
+#include "formats/patch_pb.h"
 #include "mem_storage.h"
 #include "sequencer/sequencer.h"
 #include "test.h"
@@ -938,10 +941,10 @@ TEST(export_stems_wav) {
         std::string p = std::string("Export/p/p_P1_S0001/") + nm + ".wav";
         CHECK(fs.files.count(p) == 1);
         const auto& f = fs.files[p];
-        CHECK_EQ(f.size(), 44u + 50u * kBlock * 4u);
+        CHECK_EQ(f.size(), 44u + 6397u * 4u);
         if (f.size() < 44) continue;
-        CHECK_EQ(uint32_t(f[24] | f[25] << 8 | f[26] << 16), 44117u);
-        CHECK_EQ(uint32_t(f[28] | f[29] << 8 | f[30] << 16), 176468u);
+        CHECK_EQ(uint32_t(f[24] | f[25] << 8 | f[26] << 16 | f[27] << 24), 44100u);
+        CHECK_EQ(uint32_t(f[28] | f[29] << 8 | f[30] << 16 | f[31] << 24), 176400u);
     }
     // track1 carries the note, track2 is silent.
     const auto& t1 = fs.files["Export/p/p_P1_S0001/track1.wav"];
@@ -954,7 +957,96 @@ TEST(export_stems_wav) {
     // Master-only export.
     rig.note(0, 0, 60);
     CHECK_EQ(rig.eng->exportWav(fs, "Export/p/p_Song_0001.wav", false, 20, nullptr, nullptr), 20);
-    CHECK_EQ(fs.files["Export/p/p_Song_0001.wav"].size(), 44u + 20u * kBlock * 4u);
+    CHECK_EQ(fs.files["Export/p/p_Song_0001.wav"].size(), 44u + 2558u * 4u);
+}
+
+TEST(export_synth_sine_pitch_duration_and_signal_quality) {
+    Rig rig;
+    SynthPatch patch;
+    CHECK(patchInit(kSynthEngineAcd, &patch));
+    patch.params[acd::kAmpS] = PatchParam{patchFloatToBits(1.0f), true};
+    SynthBank& synth = rig.eng->synth();
+    synth.setEngineOverride(synthTestEngine());
+    synth.bindPatch(0, &patch);
+    SynthSlotRecord record = SynthSlotRecord::defaults(0);
+    record.model = uint32_t(SynthModel::ACD);
+    record.polyphony = 1;
+    synth.setSlotRecord(0, record);
+
+    constexpr uint32_t kBlocks = 2600;  // A sustained note for a little over four bars at 130 BPM.
+    struct Ctx {
+        AudioEngine* engine;
+        uint32_t blocks = 0;
+    } ctx{rig.eng.get()};
+    auto running = [](void* p) {
+        Ctx& c = *static_cast<Ctx*>(p);
+        if (c.blocks == 0) {
+            SynthNoteOn note;
+            note.slot = 0;
+            note.note = 60;  // C4, 261.6256 Hz.
+            c.engine->synthNoteOn(0, note);
+        }
+        return ++c.blocks <= kBlocks;
+    };
+
+    MemStorage fs;
+    CHECK_EQ(rig.eng->exportWav(fs, "Export/synth", true, kBlocks, running, &ctx), int32_t(kBlocks));
+    const auto& wav = fs.files["Export/synth/synth_1.wav"];
+    constexpr size_t kHeaderBytes = 44;
+    const uint32_t expectedFrames = uint32_t(uint64_t(kBlocks) * kBlock * 2499 / 2500);
+    CHECK_EQ(wav.size(), kHeaderBytes + size_t(expectedFrames) * 4);
+    CHECK(wav.size() >= kHeaderBytes);
+    if (wav.size() < kHeaderBytes) return;
+    const uint32_t sampleRate = uint32_t(wav[24]) | (uint32_t(wav[25]) << 8) | (uint32_t(wav[26]) << 16) |
+                                (uint32_t(wav[27]) << 24);
+    CHECK_EQ(sampleRate, 44100u);
+    if (wav.size() < kHeaderBytes + size_t(expectedFrames) * 4) return;
+
+    std::vector<int16_t> left(expectedFrames);
+    int peak = 0;
+    int maxStep = 0;
+    int clipped = 0;
+    bool stereoEqual = true;
+    double mean = 0.0;
+    for (uint32_t i = 0; i < expectedFrames; ++i) {
+        const size_t offset = kHeaderBytes + size_t(i) * 4;
+        const uint16_t rawL = uint16_t(uint8_t(wav[offset])) | (uint16_t(uint8_t(wav[offset + 1])) << 8);
+        const uint16_t rawR = uint16_t(uint8_t(wav[offset + 2])) | (uint16_t(uint8_t(wav[offset + 3])) << 8);
+        left[i] = int16_t(rawL);
+        const int sample = left[i];
+        peak = std::max(peak, std::abs(sample));
+        clipped += sample == 32767 || sample == -32768;
+        mean += sample;
+        stereoEqual &= int16_t(rawR) == left[i];
+        if (i > 0) maxStep = std::max(maxStep, std::abs(sample - int(left[i - 1])));
+    }
+    const uint32_t dataBytes = uint32_t(wav[40]) | (uint32_t(wav[41]) << 8) | (uint32_t(wav[42]) << 16) |
+                               (uint32_t(wav[43]) << 24);
+    CHECK_EQ(dataBytes, expectedFrames * 4);
+    CHECK(stereoEqual);
+    CHECK(peak > 1000);
+    CHECK_EQ(clipped, 0);
+    CHECK(std::fabs(mean / expectedFrames) < 20.0);
+    CHECK(maxStep < peak / 5);  // No single-sample jumps characteristic of a resampling glitch.
+
+    // Measure positive zero-crossing periods away from the attack and tail.
+    const uint32_t firstFrame = 44100 / 4;
+    const uint32_t lastFrame = expectedFrames - 44100 / 4;
+    uint32_t firstCrossing = 0, lastCrossing = 0, crossings = 0;
+    for (uint32_t i = firstFrame + 1; i < lastFrame; ++i) {
+        if (left[i - 1] < 0 && left[i] >= 0) {
+            if (crossings == 0) firstCrossing = i;
+            lastCrossing = i;
+            ++crossings;
+        }
+    }
+    CHECK(crossings > 1000);
+    if (crossings > 1) {
+        const double measuredHz = double(crossings - 1) * 44100.0 / double(lastCrossing - firstCrossing);
+        CHECK_NEAR(measuredHz, 261.6256, 0.02);   // 0.04 % off would be 0.105 Hz
+        std::printf("  synth export: %.4f Hz, %u frames, peak %d, max step %d\n", measuredHz, expectedFrames, peak,
+                    maxStep);
+    }
 }
 
 namespace {

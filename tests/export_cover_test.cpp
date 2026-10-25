@@ -168,6 +168,16 @@ TEST(render_selection_and_load_into_free_slot) {
     CHECK(h.fs.files.count("Export/New Project/Selection/Selection0001.wav"));
     CHECK(a.instrPresent[1]);
     CHECK(a.bank.loaded(1));
+    {
+        // [I] The render is written at 44.1 kHz, so the import takes it as is:
+        // the instrument has exactly the file's frames (one rate conversion,
+        // in the export, none in the import).
+        const auto& f = h.fs.files["Export/New Project/Selection/Selection0001.wav"];
+        WavInfo info;
+        CHECK(wavParseHeader(f.data(), f.size(), info));
+        CHECK_EQ(info.sampleRate, 44100u);
+        CHECK_EQ(a.bank.frames(1), info.dataSize / 4u);
+    }
     CHECK_EQ(a.currentInstrument(), 1);
     CHECK(a.ui.active() == kModLoader);   // spec 16 §B.8: the instrument list opens
     h.tap(btn::Pattern);

@@ -285,8 +285,9 @@ public:
     // Render into WAV files: stems=false -> `path` is the master file;
     // stems=true -> `path` is a directory receiving track1..8/reverb/delay/master
     // and synth_1..3.wav (Mini %s/synth_%d.wav, spec 21 §2; 1-based: U13).
-    // Stops after maxBlocks or when running(ctx) returns false. Header sample
-    // rate field is 44117 (spec 04 §6.1). Returns blocks rendered, <0 on I/O error.
+    // Stops after maxBlocks or when running(ctx) returns false. [I] The WAVs
+    // are resampled to 44.1 kHz and say 44100 (stock: device-rate samples with
+    // 44117 in the header, spec 04 §6.1). Returns blocks rendered, <0 on I/O error.
     int32_t exportWav(IStorage& fs, const char* path, bool stems, uint32_t maxBlocks, bool (*running)(void*),
                       void* ctx);
     // Stem block buffer for exportWav (~7 KB; SDRAM on the device). Without
