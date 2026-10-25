@@ -824,7 +824,11 @@ void Ui::dispatchButton(uint8_t id, uint8_t state) {
         if (state == kPress && shift()) {
             render();   // the shown frame is current
             char p[48];
-            notify(app.screenshot(p, sizeof(p)) ? p : "Screenshot failed");
+            const bool shot = app.screenshot(p, sizeof(p));
+            // The capture blocks for ~2.6 s on the device: start the notice
+            // time after it, not at the key press, or it expires unseen.
+            now_ = app.millis();
+            notify(shot ? p : "Screenshot failed");
         } else if (state == kPress) {
             // spec 05 §1.5 state 5: popup at the press; the board powers off
             // after the 1.5 s hold, a release before that cancels it.
@@ -1283,8 +1287,9 @@ void Ui::render() {
     usb.draw(g, t);   // full screen over the module and its popups
     if (askOpen_ && !usb.active()) wg::messagePopup(g, t, askTitle_, askText_, 150, 150);
     if (progressOpen_) wg::progressPopup(g, t, progTitle_, progPct_);
-    // "Shutting down" (stock string, STRINGS_DIFF) with the hold progress;
-    // the stock progress-popup style (spec 20 §3.7) [I: no stock shot].
+    // "Shutting down" (stock string, STRINGS_DIFF) with the remaining hold;
+    // the stock progress-popup style (spec 20 §3.7). The bar shrinks as on
+    // stock (device check).
     if (powerOpen_) wg::progressPopup(g, t, "Shutting down", powerPopupPercent());
     if (note_[0]) {
         wg::popupBox(g, t, wg::kProgressX - 40, 360, wg::kProgressW + 80, 44);
