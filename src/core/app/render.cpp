@@ -284,7 +284,8 @@ bool App::exportAudio(ExportKind kind, const char* path, const SelRect* sel, boo
                                                   : kExportingSelection;
     ui.progress(g_renderTitle, 0);
     const uint32_t maxBlocks = uint32_t(uint64_t(kMaxSeconds) * 44100 / kBlock);
-    const int32_t n = engine.exportWav(fs(), path, stems, maxBlocks, &App::exportRunning, this);
+    const int32_t n = engine.exportWav(fs(), path, stems, maxBlocks, &App::exportRunning, this,
+                                       /*resampleTo44100=*/true);
     seq.stop();
     seq.setRendering(false);
     allVoicesOff();

@@ -189,6 +189,25 @@ TEST(render_selection_and_load_into_free_slot) {
     CHECK(!a.instrPresent[2]);
 }
 
+// The Render & Load import of both export modes, exact lengths: a 44100 Hz
+// file stays as is, a 44117 Hz file is converted. 44117 is the header rate,
+// not the device rate (44117.647 Hz), so after ~10 s the device-rate
+// instrument is 6 frames longer.
+TEST(render_and_load_length_in_both_export_modes) {
+    Harness h;
+    App& a = *h.app;
+    constexpr uint32_t kBlocks = 3447;
+    const uint32_t deviceFrames = kBlocks * audio::kBlock;
+    CHECK_EQ(a.engine.exportWav(h.fs, "device.wav", false, kBlocks, nullptr, nullptr, /*resampleTo44100=*/false),
+             int32_t(kBlocks));
+    CHECK_EQ(a.engine.exportWav(h.fs, "resampled.wav", false, kBlocks, nullptr, nullptr, /*resampleTo44100=*/true),
+             int32_t(kBlocks));
+    CHECK(a.importSample("device.wav", 0));
+    CHECK(a.importSample("resampled.wav", 1));
+    CHECK_EQ(a.bank.frames(0), uint32_t(uint64_t(deviceFrames) * 44100 / 44117));
+    CHECK_EQ(a.bank.frames(1), uint32_t(uint64_t(deviceFrames) * 2499 / 2500));
+}
+
 TEST(render_and_load_needs_a_free_slot) {
     Harness h;
     App& a = *h.app;

@@ -967,6 +967,18 @@ void AudioEngine::endOffline() {
 }
 
 namespace {
+// Patch the WAV header sample-rate fields to 44117 Hz (spec 04 §6.1).
+bool patchRate(IStorage& fs, const char* path) {
+    IStorage::Handle h = fs.open(path, IStorage::kReadWrite);
+    if (h < 0) return false;
+    const uint32_t rate = 44117, byteRate = 44117u * 4u;
+    const uint8_t b[8] = {uint8_t(rate), uint8_t(rate >> 8), uint8_t(rate >> 16), uint8_t(rate >> 24),
+                          uint8_t(byteRate), uint8_t(byteRate >> 8), uint8_t(byteRate >> 16), uint8_t(byteRate >> 24)};
+    bool ok = fs.seek(h, 24) && fs.write(h, b, 8) == 8;
+    fs.close(h);
+    return ok;
+}
+
 // [I] Convert device-rate audio (180 MHz * 16 / 255 / 256 = 44100 * 2500 /
 // 2499 Hz) to 44.1 kHz WAV samples without changing pitch or duration. Stock
 // writes the device-rate samples with 44117 in the header (spec 04 §6.1);
@@ -1031,7 +1043,7 @@ void joinPath(char* dst, size_t cap, const char* dir, const char* name) {
 }  // namespace
 
 int32_t AudioEngine::exportWav(IStorage& fs, const char* path, bool stems, uint32_t maxBlocks,
-                               bool (*running)(void*), void* ctx) {
+                               bool (*running)(void*), void* ctx, bool resampleTo44100) {
     static const char* const kNames[StemBlock::kStems] = {"track1.wav", "track2.wav", "track3.wav", "track4.wav",
                                                           "track5.wav", "track6.wav", "track7.wav", "track8.wav",
                                                           "reverb.wav", "delay.wav",  "master.wav", "synth_1.wav",
@@ -1065,6 +1077,10 @@ int32_t AudioEngine::exportWav(IStorage& fs, const char* path, bool stems, uint3
         renderOfflineBlock(masterBuf, stems ? stemBuf : nullptr);
         for (int i = 0; i < nw && ok; ++i) {
             const int16_t* src = stems ? stemBuf->data[i] : masterBuf;
+            if (!resampleTo44100) {
+                ok = writers[i].write(src, kBlock);
+                continue;
+            }
             const uint32_t outFrames = resamplers[i].push(src, kBlock, rateBuf);
             ok = !outFrames || writers[i].write(rateBuf, outFrames);
         }
@@ -1073,9 +1089,12 @@ int32_t AudioEngine::exportWav(IStorage& fs, const char* path, bool stems, uint3
     }
     endOffline();
     for (int i = 0; i < nw; ++i) {
-        const uint32_t outFrames = resamplers[i].finish(rateBuf);
-        if (outFrames) ok = writers[i].write(rateBuf, outFrames) && ok;
+        if (resampleTo44100) {
+            const uint32_t outFrames = resamplers[i].finish(rateBuf);
+            if (outFrames) ok = writers[i].write(rateBuf, outFrames) && ok;
+        }
         ok = writers[i].close() && ok;
+        if (!resampleTo44100) ok = patchRate(fs, names[i]) && ok;
     }
     return ok ? int32_t(n) : -1;
 }

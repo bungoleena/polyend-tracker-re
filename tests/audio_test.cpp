@@ -8,6 +8,7 @@
 #include "audio/engines/acd.h"
 #include "audio/synth_engine.h"
 #include "formats/patch_pb.h"
+#include "formats/wav.h"
 #include "mem_storage.h"
 #include "sequencer/sequencer.h"
 #include "test.h"
@@ -934,7 +935,8 @@ TEST(export_stems_wav) {
         if (x->blocks == 0) x->rig->note(0, 0, 60);
         return ++x->blocks <= 50;
     };
-    const int32_t n = rig.eng->exportWav(fs, "Export/p/p_P1_S0001", true, 1000, running, &ctx);
+    const int32_t n =
+        rig.eng->exportWav(fs, "Export/p/p_P1_S0001", true, 1000, running, &ctx, /*resampleTo44100=*/true);
     CHECK_EQ(n, 50);
     const char* names[] = {"track1", "track2", "track8", "reverb", "delay", "master"};
     for (const char* nm : names) {
@@ -956,11 +958,56 @@ TEST(export_stems_wav) {
     CHECK_EQ(nz2, 0);
     // Master-only export.
     rig.note(0, 0, 60);
-    CHECK_EQ(rig.eng->exportWav(fs, "Export/p/p_Song_0001.wav", false, 20, nullptr, nullptr), 20);
+    CHECK_EQ(rig.eng->exportWav(fs, "Export/p/p_Song_0001.wav", false, 20, nullptr, nullptr,
+                                /*resampleTo44100=*/true),
+             20);
     CHECK_EQ(fs.files["Export/p/p_Song_0001.wav"].size(), 44u + 2558u * 4u);
 }
 
-TEST(export_synth_sine_pitch_duration_and_signal_quality) {
+// Stock export (spec 04 §6.1): blocks x 128 device-rate frames, 44117 Hz and
+// byte rate 44117 x 4 in the header.
+TEST(export_stems_wav_device_rate) {
+    Rig rig;
+    rig.load(0, sine(20000, 330.0f), PlayMode::OneShot);
+    MemStorage fs;
+    struct Ctx {
+        Rig* rig;
+        uint32_t blocks;
+    } ctx{&rig, 0};
+    auto running = [](void* c) {
+        Ctx* x = static_cast<Ctx*>(c);
+        if (x->blocks == 0) x->rig->note(0, 0, 60);
+        return ++x->blocks <= 50;
+    };
+    const int32_t n =
+        rig.eng->exportWav(fs, "Export/p/p_P1_S0001", true, 1000, running, &ctx, /*resampleTo44100=*/false);
+    CHECK_EQ(n, 50);
+    const char* names[] = {"track1", "track2", "track8", "reverb", "delay", "master"};
+    for (const char* nm : names) {
+        std::string p = std::string("Export/p/p_P1_S0001/") + nm + ".wav";
+        CHECK(fs.files.count(p) == 1);
+        const auto& f = fs.files[p];
+        CHECK_EQ(f.size(), 44u + 50u * kBlock * 4u);
+        if (f.size() < 44) continue;
+        CHECK_EQ(uint32_t(f[24] | f[25] << 8 | f[26] << 16 | f[27] << 24), 44117u);
+        CHECK_EQ(uint32_t(f[28] | f[29] << 8 | f[30] << 16 | f[31] << 24), 176468u);
+    }
+    // Master-only export.
+    rig.note(0, 0, 60);
+    CHECK_EQ(rig.eng->exportWav(fs, "Export/p/p_Song_0001.wav", false, 20, nullptr, nullptr,
+                                /*resampleTo44100=*/false),
+             20);
+    const auto& m = fs.files["Export/p/p_Song_0001.wav"];
+    CHECK_EQ(m.size(), 44u + 20u * kBlock * 4u);
+    if (m.size() < 44) return;
+    CHECK_EQ(uint32_t(m[24] | m[25] << 8 | m[26] << 16 | m[27] << 24), 44117u);
+    CHECK_EQ(uint32_t(m[28] | m[29] << 8 | m[30] << 16 | m[31] << 24), 176468u);
+}
+
+namespace {
+// Export a held ACD sine and check the WAV, then the instrument that the
+// Render & Load import (wavImport with stereo on) makes from it.
+void checkSynthExport(bool resampleTo44100) {
     Rig rig;
     SynthPatch patch;
     CHECK(patchInit(kSynthEngineAcd, &patch));
@@ -990,16 +1037,21 @@ TEST(export_synth_sine_pitch_duration_and_signal_quality) {
     };
 
     MemStorage fs;
-    CHECK_EQ(rig.eng->exportWav(fs, "Export/synth", true, kBlocks, running, &ctx), int32_t(kBlocks));
+    CHECK_EQ(rig.eng->exportWav(fs, "Export/synth", true, kBlocks, running, &ctx, resampleTo44100),
+             int32_t(kBlocks));
     const auto& wav = fs.files["Export/synth/synth_1.wav"];
     constexpr size_t kHeaderBytes = 44;
-    const uint32_t expectedFrames = uint32_t(uint64_t(kBlocks) * kBlock * 2499 / 2500);
+    const uint32_t deviceFrames = kBlocks * kBlock;
+    const uint32_t expectedFrames = resampleTo44100 ? uint32_t(uint64_t(deviceFrames) * 2499 / 2500) : deviceFrames;
     CHECK_EQ(wav.size(), kHeaderBytes + size_t(expectedFrames) * 4);
     CHECK(wav.size() >= kHeaderBytes);
     if (wav.size() < kHeaderBytes) return;
     const uint32_t sampleRate = uint32_t(wav[24]) | (uint32_t(wav[25]) << 8) | (uint32_t(wav[26]) << 16) |
                                 (uint32_t(wav[27]) << 24);
-    CHECK_EQ(sampleRate, 44100u);
+    const uint32_t byteRate = uint32_t(wav[28]) | (uint32_t(wav[29]) << 8) | (uint32_t(wav[30]) << 16) |
+                              (uint32_t(wav[31]) << 24);
+    CHECK_EQ(sampleRate, resampleTo44100 ? 44100u : 44117u);
+    CHECK_EQ(byteRate, sampleRate * 4);
     if (wav.size() < kHeaderBytes + size_t(expectedFrames) * 4) return;
 
     std::vector<int16_t> left(expectedFrames);
@@ -1029,12 +1081,27 @@ TEST(export_synth_sine_pitch_duration_and_signal_quality) {
     CHECK(std::fabs(mean / expectedFrames) < 20.0);
     CHECK(maxStep < peak / 5);  // No single-sample jumps characteristic of a resampling glitch.
 
+    // The import takes a 44100 Hz file as is and converts a 44117 Hz file
+    // (spec 02 §8.1). The header rate is not the device rate (44117.647 Hz),
+    // so the two modes give different instrument lengths.
+    WavImportOptions opt;
+    opt.stereo = true;
+    std::vector<int16_t> imported(2 * size_t(deviceFrames));
+    WavImportResult res;
+    CHECK(wavImportMemory(wav.data(), wav.size(), opt, imported.data(), imported.size(), res) == FmtStatus::Ok);
+    const uint32_t importedFrames =
+        resampleTo44100 ? expectedFrames : uint32_t(uint64_t(deviceFrames) * 44100 / 44117);
+    CHECK_EQ(res.frames, importedFrames);
+    CHECK(res.stereo);
+    if (res.frames != importedFrames) return;
+    const int16_t* loaded = imported.data();   // planar: left channel first
+
     // Measure positive zero-crossing periods away from the attack and tail.
     const uint32_t firstFrame = 44100 / 4;
-    const uint32_t lastFrame = expectedFrames - 44100 / 4;
+    const uint32_t lastFrame = importedFrames - 44100 / 4;
     uint32_t firstCrossing = 0, lastCrossing = 0, crossings = 0;
     for (uint32_t i = firstFrame + 1; i < lastFrame; ++i) {
-        if (left[i - 1] < 0 && left[i] >= 0) {
+        if (loaded[i - 1] < 0 && loaded[i] >= 0) {
             if (crossings == 0) firstCrossing = i;
             lastCrossing = i;
             ++crossings;
@@ -1044,9 +1111,18 @@ TEST(export_synth_sine_pitch_duration_and_signal_quality) {
     if (crossings > 1) {
         const double measuredHz = double(crossings - 1) * 44100.0 / double(lastCrossing - firstCrossing);
         CHECK_NEAR(measuredHz, 261.6256, 0.02);   // 0.04 % off would be 0.105 Hz
-        std::printf("  synth export: %.4f Hz, %u frames, peak %d, max step %d\n", measuredHz, expectedFrames, peak,
-                    maxStep);
+        std::printf("  synth export (%s): %.4f Hz, %u file frames, %u loaded, peak %d, max step %d\n",
+                    resampleTo44100 ? "44100" : "44117", measuredHz, expectedFrames, importedFrames, peak, maxStep);
     }
+}
+}  // namespace
+
+TEST(export_synth_sine_pitch_duration_and_signal_quality) {
+    checkSynthExport(/*resampleTo44100=*/true);
+}
+
+TEST(export_synth_sine_device_rate_pitch_and_duration) {
+    checkSynthExport(/*resampleTo44100=*/false);
 }
 
 namespace {
